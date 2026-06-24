@@ -657,7 +657,7 @@ SCHEDULE = [
         "window": ("17:00", "20:00"),
         "weekday": None,
         "steps": [
-            {"run_kind": "sync",             "skill": "omni-data-sync",     "mode": "LIGHTWEIGHT",
+            {"run_kind": "sync",             "skill": "omni-data-sync",     "mode": "FULL",
              "once_per_day": False, "staleness_gate_h": 2},
             {"run_kind": "eod",              "skill": "omni-eod-review",    "mode": None,
              "once_per_day": True,  "staleness_gate_h": None},
