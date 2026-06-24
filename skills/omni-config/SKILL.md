@@ -1,7 +1,7 @@
 ---
 name: omni-config
-version: "1.11"
-description: "Centralized config for all OMNI skills. READ-ONLY — never execute directly. All skills read this file first to get shared constants: stakeholders, modules, OPCOs, Teams/ClickUp IDs, cache thresholds, signal taxonomy, Vietnamese keywords, FEATURE_REGISTRY (OPCO+feature rollup seed), and §18 AUTONOMOUS SCHEDULE (read by omni-orchestrator). One edit here updates all skills. Version: CONFIG_VERSION = '1.11'."
+version: "1.12"
+description: "Centralized config for all OMNI skills. READ-ONLY — never execute directly. All skills read this file first to get shared constants: stakeholders, modules, OPCOs, Teams/ClickUp IDs, cache thresholds, signal taxonomy, Vietnamese keywords, FEATURE_REGISTRY (OPCO+feature rollup seed), and §18 AUTONOMOUS SCHEDULE (read by omni-orchestrator). One edit here updates all skills. Version: CONFIG_VERSION = '1.12'."
 ---
 
 # OMNI Shared Configuration
@@ -15,7 +15,7 @@ description: "Centralized config for all OMNI skills. READ-ONLY — never execut
 ## VERSION CONTRACT
 
 ```python
-CONFIG_VERSION = "1.11"
+CONFIG_VERSION = "1.12"
 # Increment on every edit. Consumer skills should log which version they last tested against.
 ```
 
@@ -23,6 +23,7 @@ CONFIG_VERSION = "1.11"
 
 | Version | Change |
 |---|---|
+| 1.12 | **Registry reconcile — register omni-orchestrator + fix config self-row (2026-06-24).** `EXPECTED_SKILL_VERSIONS`: omni-config self-row 1.9→**1.12** (was never advanced when config went 1.10→1.11) and added **omni-orchestrator 1.0** (held back until its SKILL.md shipped; now live and running as a cloud routine). Registry-only edit — no constants/logic changed. Clears the two drift rows the first routine tick surfaced; drift audit should now report 0. |
 | 1.11 | **Loop v3 recall registration (2026-06-23).** Registered `omni-operator-learning` 1.1→**1.2** (new STEP 1C Recall Mining: scores recall of materialized incidents flagged-ahead vs missed, promotes vigilance-only 'flag earlier' rules for recurring misses). Added §10B `LEARNING_RECALL_LEAD_MIN_DAYS = 1`. No other constants/logic changed; recall reuses the `calibration` fact + `operator_rule` (no new table). `omni-orchestrator` still pending registration until its file ships. |
 | 1.10 | **§18 Autonomous Schedule + agent_runs (2026-06-23).** Added Section 18 `SCHEDULE` / `SCHEDULE_TICK_CHECKS` / `SCHEDULE_RULES` — the declarative schedule the new `omni-orchestrator` agent brain reads each tick to decide what is due (morning sync+briefing, evening sync+EOD+briefing, Monday weekly learning), with idempotency (done-today via `agent_runs`), staleness gates, fail-open, and a hard governance guard (orchestrator never sends external comms / never commits scope-capacity-SOW). Companion Supabase table `agent_runs` (heartbeat + idempotency + next_due_at ledger) created same day — RLS off by design, structurally separate from `actions`. No existing constants/logic changed; `EXPECTED_SKILL_VERSIONS` not yet touched (omni-orchestrator registers when its SKILL.md ships). |
 | 1.9 | **Registry drift clear — full sync to on-disk (2026-06-21).** Updated `EXPECTED_SKILL_VERSIONS` to match authoritative on-disk versions, clearing all 6 false-positive drift rows the weekly learning audit flagged plus the 3 skills patched in the decision-dedup chain: omni-utils 11.1→**11.2** (context-pack builder filters `superseded_by IS NULL`), omni-data-sync 12.2→**12.5** (STEP 7A-DEDUP structural duplicate-decision merge), omni-eod-review 9.3→**9.4** (pattern-mining query filters `superseded_by IS NULL`), omni-pulse 1.0→**1.1**, omni-clickup-ado-sync 6.3→**6.5**, omni-self-improve 1.1→**1.2**, omni-operator-learning 1.0→**1.1**, and omni-config self-row 1.6→**1.9** (registry had not been advanced since 1.6 despite config reaching 1.8). Registry-only edit — no constants/logic changed. After this, the drift audit should report 0 items. |
@@ -235,7 +236,8 @@ ADO_PAT_FILE = r"C:\Users\tamqu\Documents\Claude\Projects\W\.secrets\ado_pat.txt
 # and continue (do not abort). omni-operator-learning audits drift weekly.
 
 EXPECTED_SKILL_VERSIONS = {
-    "omni-config":                  "1.9",
+    "omni-config":                  "1.12",
+    "omni-orchestrator":            "1.0",
     "omni-utils":                   "11.2",
     "omni-data-sync":               "12.5",
     "omni-email-extractor":         "4.0",
