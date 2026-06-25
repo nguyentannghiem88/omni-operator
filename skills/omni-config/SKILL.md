@@ -726,7 +726,7 @@ Behavioral `operator_rule`s are Tier 0 and never touch git at all.
 PATCH_REPO = {
     "base_branch":         "main",
     "patch_branch_prefix": "claude/skill-patch-",   # branch safety MUST stay ON (default)
-    "skills_path":         "skills/user/",           # path within the repo to the skill suite
+    "skills_path":         "skills/",            # path within the repo to the skill suite
     "required_check":      "omni-skill-eval",        # GitHub Action status check (build step 3)
     "pr_labels":           {"auto": "automerge:eligible", "human": "needs-human"},
 }
@@ -750,9 +750,9 @@ PATCH_TIERS = {
 
 # Files/skills that can NEVER auto-merge regardless of tier (constitution-level).
 PROTECTED_PATCH_FILES = [
-    "skills/user/omni-config/**",
-    "skills/user/omni-utils/**",
-    "skills/user/omni-orchestrator/**",   # the agent brain is edited only via human merge
+    "skills/omni-config/**",
+    "skills/omni-utils/**",
+    "skills/omni-orchestrator/**",   # the agent brain is edited only via human merge
     "**/*governance*", "**/*VN-GOV*",
     ".github/workflows/**",               # the eval gate cannot rewrite itself
 ]
