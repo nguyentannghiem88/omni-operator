@@ -21,4 +21,11 @@ fi
 # 3) Best-effort Python deps (most work is done via MCP connectors, so this rarely matters).
 pip install --quiet --break-system-packages requests python-dateutil 2>/dev/null || true
 
+# 4) Authenticate gh so the Monday learning run can open claude/ skill-patch PRs.
+if [ "${GH_TOKEN:-}" != "" ]; then
+  echo "$GH_TOKEN" | gh auth login --with-token 2>/dev/null \
+    && echo "OK: gh authenticated" || echo "WARN: gh auth failed"
+else
+  echo "NOTE: GH_TOKEN not set — skill-patch PRs skipped this run."
+fi
 echo "OMNI staging complete."
