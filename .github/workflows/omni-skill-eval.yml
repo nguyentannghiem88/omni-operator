@@ -1,0 +1,48 @@
+# .github/workflows/omni-skill-eval.yml
+# The required status check that gates Tier-1 auto-merge for the OMNI operator.
+# Pairs with omni-operator-learning v1.3 STEP 3 + omni-config §19 PATCH_AUTOMERGE_POLICY.
+#
+# Make the check REQUIRED: Settings → Branches → branch protection on `main` →
+#   "Require status checks to pass" → add `omni-skill-eval`.
+# And enable Settings → General → "Allow auto-merge" so `gh pr merge --auto` works.
+# With both on, a Tier-1 PR merges itself ONLY when this job is green; everything else waits.
+
+name: omni-skill-eval
+
+on:
+  pull_request:
+    branches: [main]
+    # Re-run when the label changes — Tier-1 eligibility is label-driven.
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: omni-skill-eval-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  omni-skill-eval:                 # job name == status-check context name (must match §19 required_check)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (full history for base diff)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install deps
+        run: pip install --quiet pyyaml
+
+      - name: Run deterministic skill-patch validator
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          AUTOMERGE_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'automerge:eligible') }}
+        run: python scripts/omni_skill_eval.py
