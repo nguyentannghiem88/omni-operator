@@ -435,8 +435,8 @@ over the diff caps, or a tripped circuit breaker → **Tier-2** (human merge). D
 - **`git` mode** (routine: repo cloned, files writable, `gh` available):
 ```bash
 git checkout -b claude/skill-patch-<skill>-<YYYYMMDD>
-# edit skills/user/<skill>/SKILL.md in place, then:
-git add skills/user/<skill>/SKILL.md
+# edit skills/<skill>/SKILL.md in place, then:
+git add skills/<skill>/SKILL.md
 git commit -m "fix(<skill>): <rule.instruction first 60c> [operator-learning]"
 git push -u origin HEAD
 LABEL=<automerge:eligible | needs-human>     # from classify_tier
