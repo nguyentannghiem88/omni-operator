@@ -27,11 +27,11 @@ import os, re, sys, subprocess, fnmatch
 MAX_DESC_CHARS      = 1024
 TIER1_MAX_LINES     = 40
 TIER1_MAX_FILES     = 1
-SKILLS_GLOB         = "skills/user/*/SKILL.md"
+SKILLS_GLOB         = "skills/*/SKILL.md"
 PROTECTED_PATCH_FILES = [
-    "skills/user/omni-config/*",
-    "skills/user/omni-utils/*",
-    "skills/user/omni-orchestrator/*",
+    "skills/omni-config/*",
+    "skills/omni-utils/*",
+    "skills/omni-orchestrator/*",
     "*governance*", "*VN-GOV*",
     ".github/workflows/*",
 ]
