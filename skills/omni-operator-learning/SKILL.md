@@ -1,10 +1,10 @@
 ---
 name: omni-operator-learning
 version: "1.2"
-description: "Closed learning loop for the OMNI AI Operator. Aggregates operator_eval_reviews + operator_feedback over a 14-day window, promotes recurring issues (≥2 occurrences) to durable operator_rule facts injected into briefing/EOD, audits skill version drift, and proposes SKILL.md patches for human approval. Also defines the in-chat feedback capture convention. v1.2: STEP 1C Recall Mining (Loop v3) — scores RECALL (materialized incidents/blockers flagged ahead vs missed) mined from raw source_items+risks, merges a recall block into the calibration fact, and promotes vigilance-only 'flag earlier' rules for recurring misses (≥2×). Triggers on: 'run operator learning', 'learning review', 'weekly learning', 'promote lessons', 'train the operator', 'self-improve', 'audit skill drift'. Run weekly (Mondays) or on demand."
+description: "Closed learning loop for the OMNI AI Operator. Aggregates operator_eval_reviews + operator_feedback over a 14-day window, promotes recurring issues (≥2 occurrences) to durable operator_rule facts injected into briefing/EOD, audits skill version drift, scores recall of materialized incidents, and turns high-confidence rules into git-native skill-patch PRs. Defines the in-chat feedback capture convention. v1.3: STEP 3 git-native tiered auto-merge per §19 PATCH_AUTOMERGE_POLICY — opens claude/ skill-patch PRs; Tier-1 (single non-protected skill, ≤40 lines, occ≥3) auto-merges on a green omni-skill-eval check; Tier-2 (omni-utils/omni-config/omni-orchestrator/governance/multi-file) and the registry-bump PR stay human-merge; circuit breaker forces Tier-2 after 2 degrading eval trends; Cowork export fallback preserved. Triggers on: 'run operator learning', 'learning review', 'weekly learning', 'promote lessons', 'train the operator', 'self-improve', 'audit skill drift'. Run weekly (Mondays) or on demand."
 ---
 
-# OMNI Operator Learning — v1.2
+# OMNI Operator Learning — v1.3
 
 **Purpose:** Make the AI Operator self-improving. Converts eval findings and user
 corrections into (a) durable prevention rules auto-injected into every briefing/EOD run,
@@ -19,7 +19,7 @@ Output → Eval (eval-review) → Feedback (capture rule) → Aggregate (this sk
 
 ## ⚠️ READ FIRST — SHARED CONFIG + UTILS
 
-1. `/mnt/skills/user/omni-config/SKILL.md` → constants (CONFIG_VERSION = "1.11", §10 + §10B)
+1. `/mnt/skills/user/omni-config/SKILL.md` → constants (CONFIG_VERSION = "1.13", §10 + §10B + §19 PATCH_AUTOMERGE_POLICY)
 2. `/mnt/skills/user/omni-utils/SKILL.md` → utilities (UTILITY_VERSION = "11.2")
 
 ⛔ Mem0 is retired. Supabase only. No new tables — uses `knowledge_facts`,
@@ -78,7 +78,7 @@ corrections (fix those in the source table directly), or stylistic chatter.
 ## STEP 0 — BOOTSTRAP + VERSION DRIFT AUDIT
 
 ```python
-SKILL_VERSION = "1.2"
+SKILL_VERSION = "1.3"
 # 1. Load EXPECTED_SKILL_VERSIONS from omni-config §10
 # 2. For each skill dir in /mnt/skills/user/: read frontmatter/header version
 # 3. drift = [s for s in skills if on_disk_version != expected_version]
@@ -379,22 +379,85 @@ above. This preserves the constitution: learning may reinforce governance, never
 
 ---
 
-## STEP 3 — PROPOSE SKILL PATCHES (human-in-the-loop)
+## STEP 3 — PATCH SKILLS (git-native, tiered auto-merge) ⭐ v1.3
 
-For each rule with `occurrences >= 3` OR `severity >= 8` AND a clear `target_skill`:
+Reads §19 `PATCH_*` from omni-config. Turns each high-confidence rule into a `claude/`-branch
+PR. **Tier-1** PRs auto-merge on a green `omni-skill-eval` check; **Tier-2** PRs wait for
+Nghiem. The loop NEVER pushes to `main` and NEVER auto-merges a protected/governance patch.
 
-1. Read the target SKILL.md, locate `target_step`.
-2. Draft a minimal patch (changed-section diff only) that hard-codes the rule into
-   the skill — making the rule structural, not just injected.
-3. Apply patch to a COPY in `/home/claude/`, export to
-   `/mnt/user-data/outputs/<skill>-SKILL.md`, and call `present_files`.
-4. Show the diff summary FIRST; Nghiem approves and re-uploads — `/mnt/skills/user/`
-   is read-only at runtime, so this is the only patch path.
-5. On approval confirmation in a later session: set rule `status_note='patched_into_skill'`
-   and bump the skill version in omni-config §10 registry (export updated config too).
+### 3.0 — Context + circuit breaker (gate before any patch)
+```python
+import os
+from fnmatch import fnmatch
+# Read §19 from omni-config: PATCH_REPO, PATCH_TIERS, PROTECTED_PATCH_FILES,
+# PROTECTED_PATCH_CONTENT, PATCH_AUTOMERGE_POLICY, AUTOMERGE_ENABLED.
+MODE = os.environ.get("OMNI_PATCH_MODE", "export")   # routine env sets "git"; else legacy export
 
-Never patch more than 3 skills per learning run. Never patch omni-utils/omni-config
-without explicit confirmation.
+# Circuit breaker: 2 consecutive degrading eval-score/recall trends → force every patch to Tier-2.
+last2 = supabase_sql("""SELECT content FROM knowledge_facts
+  WHERE fact_type='calibration' AND status='active'
+  ORDER BY updated_at DESC LIMIT 2;""") or []
+def _deg(c):
+    t = c.get("trend", {}) or {}
+    return t.get("ranking_precision") == "degrading" or (c.get("recall", {}) or {}).get("trend") == "degrading"
+degrading2 = len(last2) == 2 and all(_deg(r["content"]) for r in last2)
+automerge_live = AUTOMERGE_ENABLED and not degrading2
+# If degrading2: open a needs-human config PR proposing AUTOMERGE_ENABLED=False (durable kill-switch)
+# and surface it in STEP 5. This run is already safe (forced Tier-2 below).
+```
+
+### 3.1 — Select candidates (cap = weekly_automerge_cap, default 3)
+Rules with `occurrences >= 3 OR severity >= 8`, a clear `target_skill` + `target_step`, and
+`status_note='active'` (NOT already `patched_into_skill`). Max 3 per run.
+
+### 3.2 — Draft the minimal patch
+Read the target SKILL.md, locate `target_step`, draft the smallest changed-section edit that
+hard-codes the rule (structural, not just injected). Compute `changed_lines`; `files=1` here.
+
+### 3.3 — Classify tier (per §19 — this is the safety decision)
+```python
+def classify_tier(target_file, patch_text, rule, changed_lines, files=1):
+    protected_file = any(fnmatch(target_file, g) for g in PROTECTED_PATCH_FILES)
+    protected_text = any(t in patch_text.lower() for t in PROTECTED_PATCH_CONTENT)
+    t1 = PATCH_TIERS["tier1_auto"]
+    eligible = (automerge_live and not protected_file and not protected_text
+                and files <= t1["max_files"] and changed_lines <= t1["max_changed_lines"]
+                and rule["content"].get("occurrences", 0) >= 3)
+    return "tier1" if eligible else "tier2"
+```
+A high-severity (sev≥8) but only-2× rule, anything touching a PROTECTED file/content, anything
+over the diff caps, or a tripped circuit breaker → **Tier-2** (human merge). Default-safe.
+
+### 3.4 — Open the PR
+- **`export` mode** (Cowork / interactive, `/mnt/skills/user` read-only): write the patched copy
+  to `/mnt/user-data/outputs/<skill>-SKILL.md`, `present_files`, show the diff summary FIRST,
+  and STOP — identical to ≤v1.2. No git here; the next routine run (or Nghiem) opens the PR.
+- **`git` mode** (routine: repo cloned, files writable, `gh` available):
+```bash
+git checkout -b claude/skill-patch-<skill>-<YYYYMMDD>
+# edit skills/user/<skill>/SKILL.md in place, then:
+git add skills/user/<skill>/SKILL.md
+git commit -m "fix(<skill>): <rule.instruction first 60c> [operator-learning]"
+git push -u origin HEAD
+LABEL=<automerge:eligible | needs-human>     # from classify_tier
+gh pr create --base main --label "$LABEL" \
+     --title "skill-patch: <skill> — <1-line>" --body "<body>"
+# Tier-1 ONLY — enable native auto-merge; GitHub merges when omni-skill-eval is green:
+gh pr merge --auto --squash                  # Tier-2: OMIT — left for human merge
+```
+PR body MUST include: rule key + `evidence` refs, tier + reason, the changed-section diff, and
+the companion-registry note (3.5). Branch safety (`claude/` prefix) stays ON at the routine env.
+
+### 3.5 — Companion registry-bump PR (ALWAYS Tier-2 / needs-human)
+A Tier-1 skill auto-merge bumps the skill's on-disk version, but `EXPECTED_SKILL_VERSIONS` lives
+in omni-config (a PROTECTED file). Open a SEPARATE `needs-human` PR bumping §10 for that skill.
+**The code fix ships automatically; the human ratifies the version ledger.** Until that PR
+merges, the drift audit shows one expected row — a visible record that an auto-merge happened.
+
+### 3.6 — On merge (this run or a later one)
+When a patch PR is detected merged: set rule `status_note='patched_into_skill'`, record the merge
+sha in `evidence`. Never patch the same rule twice. Never patch >3 skills/run. omni-utils /
+omni-config / omni-orchestrator are PROTECTED → they are ALWAYS Tier-2, never auto-merged.
 
 ---
 
@@ -416,10 +479,13 @@ Also run `cleanup_stale_knowledge_facts()` from omni-utils if available.
 ```python
 write_action(
     skill="LEARNING", action_type="LEARNING_RUN",
-    summary=f"Learning run — {n_signals} signals → {n_promoted} rules promoted, {n_merged} merged, {n_patches} patches proposed, drift: {n_drift}",
+    summary=f"Learning run — {n_signals} signals → {n_promoted} promoted, {n_merged} merged, "
+            f"{n_patches} PRs ({n_automerge} auto / {n_human} needs-human), drift: {n_drift}",
     metadata={"signals": n_signals, "promoted": n_promoted, "merged": n_merged,
-              "patches_proposed": patch_list, "drift": drift_list,
-              "score_trend": score_series},
+              "drift": drift_list, "score_trend": score_series,
+              # §19 audit: link each patch rule → PR → merge outcome
+              "patches": patch_list,            # [{rule_key, skill, tier, pr_url, label, merged}]
+              "automerge_enabled": automerge_live, "circuit_breaker_tripped": degrading2},
 )
 ```
 
@@ -436,8 +502,11 @@ Recall (14d): <recall> (<trend>) | ahead <a> · late <l> · missed <m> of <n> ma
 | Rule | Category | Occ | Sev | Source |
 |---|---|---|---|---|
 
-## Skill patches proposed (<N>)
-- <skill> <vX → vY>: <1-line change> → exported for approval
+## Skill patches (<N>)  ⭐ v1.3
+- 🟢 auto-merge (Tier-1, eval-gated): <skill> <vX→vY> — <1-line> → <pr_url> (<merged|awaiting eval>)
+- 🟡 needs-human (Tier-2): <skill> <vX→vY> — <1-line> → <pr_url>
+- ⚙️ registry-bump PRs (needs-human): <skill> §10 <vX→vY> → <pr_url>
+- 🔴 circuit breaker: <"tripped — all patches forced Tier-2; config kill-switch PR opened" | omit>
 
 ## Rule decay (<N>)
 - archived (stale, non-gov, sev<8): <keys>
@@ -461,8 +530,11 @@ Next learning run: <next Monday>
 
 ## GUARDRAILS
 
-- ⛔ Never modify `/mnt/skills/user/` directly — read-only; patches go via outputs export.
-- ⛔ Never auto-apply a patch without showing the diff and getting approval.
+- ⛔ Never push to `main` — branch safety ON; all changes via `claude/skill-patch-*` PRs.
+- ⛔ Never auto-merge a Tier-2 / PROTECTED_PATCH_FILES / PROTECTED_PATCH_CONTENT patch, and
+  never auto-merge without a green `omni-skill-eval` check. Tier-1 auto-merge is eval-gated only.
+- ⛔ Never auto-merge `omni-utils` / `omni-config` / `omni-orchestrator` or any governance-touching
+  patch — these are ALWAYS Tier-2 (human merge). The registry-bump PR is ALWAYS needs-human.
 - Rules must be imperative, testable, ≤40 words. Vague rules are rejected.
 - Never promote from a single occurrence (min 2) — avoids overfitting to one-off noise.
 - Never write transient sync data to knowledge_facts — operator_feedback/operator_rule only.
@@ -484,6 +556,6 @@ Auto-suggested: when eval-review STEP 3F flags a recurring check failure.
 
 | Version | Change |
 |---|---|
-| v1.2 | **Loop v3 — recall mining (learn from misses)** (2026-06-23). New STEP 1C scores RECALL, the blind spot Loop v2 left open: detects materialized incident/blocker events from raw `source_items` (urgency/tags/keyword heuristic), matches each to its earliest prior `risks` flag (market+module / ≥2-token overlap / feature_key), and classifies flagged-ahead (lead ≥`LEARNING_RECALL_LEAD_MIN_DAYS`=1d) vs late vs missed → `recall = ahead/(ahead+late+missed)` with trend vs prior. Recurring missed clusters (≥2× same market/feature) promote `category="risk"` "flag earlier" rules via STEP 2 — vigilance-only, never gate/weaken/governance. Recall block merged into the same daily `calibration` fact (one extra upsert; no new fact_type/table). STEP 5 gains a Recall line + Top-missed section. Mined independent of the sparse `outcome_signal` pipeline, so it works immediately. STEP 1C.1 excludes governance/capacity/SOW items (hardened by a live dry-run that mis-caught a "Mongo SOW cost" item as an incident). Handshake → config 1.11 (registers learning 1.2 + adds §10B `LEARNING_RECALL_LEAD_MIN_DAYS`). |
+| v1.3 | **Git-native tiered auto-merge (2026-06-24).** STEP 3 rewritten from export-only "propose patch" to a git-native PR flow governed by omni-config §19 `PATCH_AUTOMERGE_POLICY`. New 3.0 reads §19 + a circuit breaker (2 consecutive degrading eval/recall trends → force all patches Tier-2 + open a needs-human config kill-switch PR). 3.3 `classify_tier`: Tier-1 = single non-protected skill, ≤40 changed lines / 1 file, occ≥3, auto-merge enabled → label `automerge:eligible` + `gh pr merge --auto` (merges only on a green `omni-skill-eval` check); everything else (PROTECTED files/content, sev-only rules, over-cap diffs, tripped breaker) → Tier-2 `needs-human`. 3.4 dual-mode: `git` (routine clone, writable, `gh`) opens the PR; `export` (Cowork, read-only mount) preserves the ≤v1.2 outputs-export + present_files fallback. 3.5 companion §10 registry-bump PR is ALWAYS needs-human — code fix ships auto, human ratifies the version ledger. STEP 5 audit logs `{rule_key, skill, tier, pr_url, label, merged}` + breaker state. Guardrails rewritten: never push main, never auto-merge Tier-2/protected/governance, never auto-merge without green eval. Config handshake → 1.13. Registers in §10 when this file ships. | New STEP 1C scores RECALL, the blind spot Loop v2 left open: detects materialized incident/blocker events from raw `source_items` (urgency/tags/keyword heuristic), matches each to its earliest prior `risks` flag (market+module / ≥2-token overlap / feature_key), and classifies flagged-ahead (lead ≥`LEARNING_RECALL_LEAD_MIN_DAYS`=1d) vs late vs missed → `recall = ahead/(ahead+late+missed)` with trend vs prior. Recurring missed clusters (≥2× same market/feature) promote `category="risk"` "flag earlier" rules via STEP 2 — vigilance-only, never gate/weaken/governance. Recall block merged into the same daily `calibration` fact (one extra upsert; no new fact_type/table). STEP 5 gains a Recall line + Top-missed section. Mined independent of the sparse `outcome_signal` pipeline, so it works immediately. STEP 1C.1 excludes governance/capacity/SOW items (hardened by a live dry-run that mis-caught a "Mongo SOW cost" item as an incident). Handshake → config 1.11 (registers learning 1.2 + adds §10B `LEARNING_RECALL_LEAD_MIN_DAYS`). |
 | v1.1 | **Loop v2 — calibration + rule decay (Gate 3)** (2026-06-14). New STEP 1B reads `outcome_signal` facts (from omni-data-sync v12.3) → computes ranking_precision / over_rate / under_rate / risk_hit_rate with trend vs prior, writes `calibration` fact (180d). New STEP 2B rule decay: autonomous staleness-archive (non-gov, sev<8, >45d unreinforced), high-sev stale PROPOSED only, effectiveness `review` flag from degrading calibration. ⛔ Hard governance guard (never archive/propose VN-GOV/gov rules). Output gains Calibration line + Rule decay section. Handshake bumped to utils v11.2 / config v1.8. Requires omni-data-sync v12.3 emitting outcome_signal. |
 | v1.0 | Initial. Feedback capture convention, 14d aggregation, ≥2× rule promotion to knowledge_facts(operator_rule), briefing/EOD injection contract (STEP 0A2), human-approved skill patch pipeline, version drift audit vs omni-config §10, trend reporting, hygiene expiry. |
