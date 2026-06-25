@@ -1,7 +1,7 @@
 ---
 name: omni-config
 version: "1.12"
-description: "Centralized config for all OMNI skills. READ-ONLY — never execute directly. All skills read this file first to get shared constants: stakeholders, modules, OPCOs, Teams/ClickUp IDs, cache thresholds, signal taxonomy, Vietnamese keywords, FEATURE_REGISTRY (OPCO+feature rollup seed), and §18 AUTONOMOUS SCHEDULE (read by omni-orchestrator). One edit here updates all skills. Version: CONFIG_VERSION = '1.12'."
+description: "Centralized config for all OMNI skills. READ-ONLY — never execute directly. All skills read this file first to get shared constants: stakeholders, modules, OPCOs, Teams/ClickUp IDs, cache thresholds, signal taxonomy, Vietnamese keywords, FEATURE_REGISTRY (OPCO+feature rollup seed), §18 AUTONOMOUS SCHEDULE (read by omni-orchestrator), and §19 PATCH_AUTOMERGE_POLICY (safety contract for git-native skill-patch PRs + tiered auto-merge, read by omni-operator-learning). One edit here updates all skills. Version: CONFIG_VERSION = '1.13'."
 ---
 
 # OMNI Shared Configuration
@@ -15,7 +15,7 @@ description: "Centralized config for all OMNI skills. READ-ONLY — never execut
 ## VERSION CONTRACT
 
 ```python
-CONFIG_VERSION = "1.12"
+CONFIG_VERSION = "1.13"
 # Increment on every edit. Consumer skills should log which version they last tested against.
 ```
 
@@ -23,6 +23,7 @@ CONFIG_VERSION = "1.12"
 
 | Version | Change |
 |---|---|
+| 1.13 | **§19 Skill Patch Auto-Merge Policy (2026-06-24).** Added Section 19 `PATCH_REPO` / `PATCH_TIERS` / `PROTECTED_PATCH_FILES` / `PROTECTED_PATCH_CONTENT` / `PATCH_AUTOMERGE_POLICY` / `AUTOMERGE_ENABLED` — the safety contract for the git-native self-update loop (`omni-operator-learning` v1.3, shipping next). Tier 0 behavioral `operator_rule`s unchanged (no git). Tier 1 = single non-protected skill, ≤40 changed lines / 1 file, occ≥3, auto-merge ONLY on a green `omni-skill-eval` check (≤3/week). Tier 2 = omni-utils / omni-config / omni-orchestrator / governance / multi-file → PR only, human merge. Branch safety stays ON (`claude/` prefix — never push to `main`); circuit breaker disables auto-merge after 2 consecutive degrading eval-score trends. Config self-row 1.12→**1.13**. `omni-operator-learning` NOT yet registered to 1.3 — registers when its SKILL.md ships (established hold pattern), so no false drift row. No constants/logic changed for any existing skill. |
 | 1.12 | **Registry reconcile — register omni-orchestrator + fix config self-row (2026-06-24).** `EXPECTED_SKILL_VERSIONS`: omni-config self-row 1.9→**1.12** (was never advanced when config went 1.10→1.11) and added **omni-orchestrator 1.0** (held back until its SKILL.md shipped; now live and running as a cloud routine). Registry-only edit — no constants/logic changed. Clears the two drift rows the first routine tick surfaced; drift audit should now report 0. |
 | 1.11 | **Loop v3 recall registration (2026-06-23).** Registered `omni-operator-learning` 1.1→**1.2** (new STEP 1C Recall Mining: scores recall of materialized incidents flagged-ahead vs missed, promotes vigilance-only 'flag earlier' rules for recurring misses). Added §10B `LEARNING_RECALL_LEAD_MIN_DAYS = 1`. No other constants/logic changed; recall reuses the `calibration` fact + `operator_rule` (no new table). `omni-orchestrator` still pending registration until its file ships. |
 | 1.10 | **§18 Autonomous Schedule + agent_runs (2026-06-23).** Added Section 18 `SCHEDULE` / `SCHEDULE_TICK_CHECKS` / `SCHEDULE_RULES` — the declarative schedule the new `omni-orchestrator` agent brain reads each tick to decide what is due (morning sync+briefing, evening sync+EOD+briefing, Monday weekly learning), with idempotency (done-today via `agent_runs`), staleness gates, fail-open, and a hard governance guard (orchestrator never sends external comms / never commits scope-capacity-SOW). Companion Supabase table `agent_runs` (heartbeat + idempotency + next_due_at ledger) created same day — RLS off by design, structurally separate from `actions`. No existing constants/logic changed; `EXPECTED_SKILL_VERSIONS` not yet touched (omni-orchestrator registers when its SKILL.md ships). |
@@ -236,7 +237,7 @@ ADO_PAT_FILE = r"C:\Users\tamqu\Documents\Claude\Projects\W\.secrets\ado_pat.txt
 # and continue (do not abort). omni-operator-learning audits drift weekly.
 
 EXPECTED_SKILL_VERSIONS = {
-    "omni-config":                  "1.12",
+    "omni-config":                  "1.13",
     "omni-orchestrator":            "1.0",
     "omni-utils":                   "11.2",
     "omni-data-sync":               "12.5",
@@ -657,7 +658,7 @@ SCHEDULE = [
         "window": ("17:00", "20:00"),
         "weekday": None,
         "steps": [
-            {"run_kind": "sync",             "skill": "omni-data-sync",     "mode": "FULL",
+            {"run_kind": "sync",             "skill": "omni-data-sync",     "mode": "LIGHTWEIGHT",
              "once_per_day": False, "staleness_gate_h": 2},
             {"run_kind": "eod",              "skill": "omni-eod-review",    "mode": None,
              "once_per_day": True,  "staleness_gate_h": None},
@@ -710,6 +711,83 @@ SCHEDULE_RULES = {
 Written by `omni-orchestrator`; read by briefing/EOD only for "did the agent already run me today"
 awareness. Structurally separate from `actions` so autonomy telemetry never enters the work backlog
 or the self-improve STEP 2B auto-age pass.
+
+---
+
+## 19. SKILL PATCH AUTO-MERGE POLICY (v1.13 — read by omni-operator-learning v1.3+)
+
+**Purpose:** Turn the human-gated patch-export flow into a git-native auto-PR loop WITHOUT
+letting the agent rewrite its own governing code unsupervised. Claude Code routines push ONLY
+to `claude/`-prefixed branches (branch safety ON), so every structural change becomes a PR.
+This policy decides which PRs may **auto-merge** (Tier 1) vs require a **human merge** (Tier 2).
+Behavioral `operator_rule`s are Tier 0 and never touch git at all.
+
+```python
+PATCH_REPO = {
+    "base_branch":         "main",
+    "patch_branch_prefix": "claude/skill-patch-",   # branch safety MUST stay ON (default)
+    "skills_path":         "skills/user/",           # path within the repo to the skill suite
+    "required_check":      "omni-skill-eval",        # GitHub Action status check (build step 3)
+    "pr_labels":           {"auto": "automerge:eligible", "human": "needs-human"},
+}
+
+# Tier eligibility — evaluated by omni-operator-learning STEP 3 when drafting a patch.
+PATCH_TIERS = {
+    "tier0_behavioral": "operator_rule promotion — NO git; auto-applied at briefing/EOD STEP 0A2 (live).",
+    "tier1_auto": {            # → label automerge:eligible; merges automatically once required_check green
+        "applies_to":        "ONE non-protected skill, touching ONLY the flagged target_step",
+        "max_changed_lines": 40,                    # diff larger than this → escalate to Tier 2
+        "max_files":         1,
+        "requires":          "rule.occurrences >= 3 AND clear target_skill+target_step AND eval green",
+        "auto_merge":        True,
+    },
+    "tier2_human": {           # → label needs-human; PR only, NEVER auto-merge
+        "applies_to":        "omni-utils, omni-config, omni-orchestrator, any PROTECTED_PATCH_FILES, "
+                             "multi-file, or diff beyond tier1 caps",
+        "auto_merge":        False,
+    },
+}
+
+# Files/skills that can NEVER auto-merge regardless of tier (constitution-level).
+PROTECTED_PATCH_FILES = [
+    "skills/user/omni-config/**",
+    "skills/user/omni-utils/**",
+    "skills/user/omni-orchestrator/**",   # the agent brain is edited only via human merge
+    "**/*governance*", "**/*VN-GOV*",
+    ".github/workflows/**",               # the eval gate cannot rewrite itself
+]
+# Any patch whose CONTENT touches governance routing, the autonomy boundary, or a guardrail block
+# → forced Tier 2 even on an otherwise-eligible file.
+PROTECTED_PATCH_CONTENT = ["yilun", "andrea", "vn-gov", "capacity", "sow", "scope governance",
+                           "autonomy boundary", "governance guard", "branch safety"]
+
+PATCH_AUTOMERGE_POLICY = {
+    "weekly_automerge_cap": 3,        # ≤3 Tier-1 auto-merges per learning run (matches STEP 3 patch cap)
+    "eval_gate":            "auto-merge fires ONLY when required_check='omni-skill-eval' = success. "
+                            "No check / failed / pending → PR stays open for human review.",
+    "circuit_breaker":      "if calibration eval-score trend = 'degrading' for 2 consecutive weekly "
+                            "runs → set AUTOMERGE_ENABLED=False, relabel all open Tier-1 PRs needs-human, "
+                            "surface for human re-enable. Self-protects against a bad learning spiral.",
+    "rollback":             "every auto-merge is a single revertable commit; the agent_runs/actions "
+                            "audit links operator_rule → PR url → merge sha. Undo = git revert <sha>.",
+    "audit":                "STEP 5 LEARNING_RUN logs {rule_key, pr_url, tier, merged: bool} per patch.",
+}
+AUTOMERGE_ENABLED = True   # master switch; circuit breaker or a human may set False
+
+# HARD GUARDRAILS (NON-NEGOTIABLE):
+#  - NEVER push to base_branch directly — branch safety stays ON; all changes via claude/ PRs.
+#  - NEVER auto-merge Tier 2 / PROTECTED_PATCH_FILES / PROTECTED_PATCH_CONTENT — human merge only.
+#  - NEVER auto-merge without a green required_check.
+#  - NEVER weaken governance / autonomy-boundary / guardrail blocks via an auto-merged patch.
+#  - Learning loop OPENS & LABELS PRs; the merge of a Tier-1 PR is the GitHub Action's auto-merge
+#    on green — never an interactive Claude send and never a direct write to main.
+```
+
+**Why the line is drawn here:** Tier 1 delivers the "feels fully automatic" experience for the
+safe majority of fixes (a small, evidenced, single-step change that passes its own eval). Tier 2
+keeps a human merge on the brain-surgery class — the agent's own brain (`omni-orchestrator`),
+shared infra (`omni-utils`/`omni-config`), and anything governance-touching — preserving the
+constitution (VN-GOV: YiLun→Andrea, Peter CC) that the rest of the architecture depends on.
 
 ---
 
