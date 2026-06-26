@@ -1,10 +1,10 @@
 ---
 name: omni-operator-learning
-version: "1.2"
-description: "Closed learning loop for the OMNI AI Operator. Aggregates operator_eval_reviews + operator_feedback over a 14-day window, promotes recurring issues (≥2 occurrences) to durable operator_rule facts injected into briefing/EOD, audits skill version drift, scores recall of materialized incidents, and turns high-confidence rules into git-native skill-patch PRs. Defines the in-chat feedback capture convention. v1.3: STEP 3 git-native tiered auto-merge per §19 PATCH_AUTOMERGE_POLICY — opens claude/ skill-patch PRs; Tier-1 (single non-protected skill, ≤40 lines, occ≥3) auto-merges on a green omni-skill-eval check; Tier-2 (omni-utils/omni-config/omni-orchestrator/governance/multi-file) and the registry-bump PR stay human-merge; circuit breaker forces Tier-2 after 2 degrading eval trends; Cowork export fallback preserved. Triggers on: 'run operator learning', 'learning review', 'weekly learning', 'promote lessons', 'train the operator', 'self-improve', 'audit skill drift'. Run weekly (Mondays) or on demand."
+version: "1.4"
+description: "Closed learning loop for the OMNI AI Operator. Aggregates operator_eval_reviews + operator_feedback over a 14-day window, promotes recurring issues (≥2 occurrences) to durable operator_rule facts injected into briefing/EOD, audits skill version drift, scores recall of materialized incidents, and turns high-confidence rules into git-native skill-patch PRs. v1.4: STEP 1B consumes the dense response ledger (data-sync v12.7 kind=response) → acted_rate/ignored_rate/overridden_rate with trend; STEP 2B adds a surface-only response-health advisory (never auto-archives on the global signal, never touches governance). v1.3: STEP 3 git-native tiered auto-merge per §19 — Tier-1 (single non-protected, ≤40 lines, occ≥3) auto-merges on green omni-skill-eval; Tier-2/registry human-merge; circuit breaker forces Tier-2 after 2 degrading trends. Triggers: 'run operator learning', 'learning review', 'weekly learning', 'promote lessons', 'train the operator', 'self-improve', 'audit skill drift'. Run weekly or on demand."
 ---
 
-# OMNI Operator Learning — v1.3
+# OMNI Operator Learning — v1.4
 
 **Purpose:** Make the AI Operator self-improving. Converts eval findings and user
 corrections into (a) durable prevention rules auto-injected into every briefing/EOD run,
@@ -33,7 +33,7 @@ Output → Eval (eval-review) → Feedback (capture rule) → Aggregate (this sk
 |---|---|---|---|
 | `operator_feedback` | `fb:<YYYYMMDD>:<slug>` | One user correction (see capture rule) | 90d |
 | `operator_rule` | `rule:<category>:<slug>` | Promoted prevention rule | none |
-| `outcome_signal` | `out:<kind>:<ref>` | READ — terminal action/risk vs prediction (from omni-data-sync v12.3 STEP 7A0) | 120d |
+| `outcome_signal` | `out:<kind>:<ref>` | READ — terminal action/risk vs prediction + dense response verdicts (kind=action/risk/**response**, from omni-data-sync v12.3/v12.7 STEP 7A0/7A0-B) | 120d |
 | `calibration` | `calibration:operator:<date>` | WRITE — weekly precision metrics + trend | 180d |
 
 `operator_rule` content schema:
@@ -78,7 +78,7 @@ corrections (fix those in the source table directly), or stylistic chatter.
 ## STEP 0 — BOOTSTRAP + VERSION DRIFT AUDIT
 
 ```python
-SKILL_VERSION = "1.3"
+SKILL_VERSION = "1.4"
 # 1. Load EXPECTED_SKILL_VERSIONS from omni-config §10
 # 2. For each skill dir in /mnt/skills/user/: read frontmatter/header version
 # 3. drift = [s for s in skills if on_disk_version != expected_version]
@@ -134,17 +134,25 @@ def rate(n, d): return round(n / d, 2) if d else None
 
 acts = [r for r in rows if r.get("kind") == "action"]
 rsk  = [r for r in rows if r.get("kind") == "risk"]
+resp = [r for r in rows if r.get("kind") == "response"]   # v1.4 — dense response ledger (data-sync v12.7 STEP 7A0-B)
 hi = sum(1 for r in acts if r["verdict"] == "hit")
 ov = sum(1 for r in acts if r["verdict"] == "over")
 un = sum(1 for r in acts if r["verdict"] == "under")
 risk_hits = sum(1 for r in rsk if r.get("materialized") is True)
+acted     = sum(1 for r in resp if r["verdict"] == "acted")
+ignored   = sum(1 for r in resp if r["verdict"] == "ignored")
+overridden= sum(1 for r in resp if r["verdict"] == "overridden")
 
 cal = {
-    "window_days": 14, "n_actions": len(acts), "n_risks": len(rsk),
+    "window_days": 14, "n_actions": len(acts), "n_risks": len(rsk), "n_responses": len(resp),
     "ranking_precision": rate(hi, hi + ov),   # of high-ranked closed items, share actually actioned
     "over_rate":  rate(ov, len(acts)),        # cry-wolf: ranked high, never needed
     "under_rate": rate(un, len(acts)),        # missed urgency: low item became a blocker
     "risk_hit_rate": rate(risk_hits, len(rsk)),
+    # v1.4 — response calibration (was the surfaced rec acted on, ignored, or overridden?)
+    "acted_rate":      rate(acted, len(resp)),       # of resolved recs, share the human actioned (higher=better)
+    "ignored_rate":    rate(ignored, len(resp)),     # surfaced then let lapse → noise (lower=better)
+    "overridden_rate": rate(overridden, len(resp)),  # human reversed the classification → miscalibration (lower=better)
     "computed_at": now_str,
 }
 
@@ -163,6 +171,9 @@ cal["trend"] = {
     "ranking_precision": trend(cal["ranking_precision"], prev.get("ranking_precision")),
     "over_rate":         trend(cal["over_rate"],  prev.get("over_rate"),  lower_is_better=True),
     "under_rate":        trend(cal["under_rate"], prev.get("under_rate"), lower_is_better=True),
+    "acted_rate":        trend(cal["acted_rate"],      prev.get("acted_rate")),
+    "ignored_rate":      trend(cal["ignored_rate"],    prev.get("ignored_rate"),    lower_is_better=True),
+    "overridden_rate":   trend(cal["overridden_rate"], prev.get("overridden_rate"), lower_is_better=True),
 }
 
 upsert_knowledge_fact("calibration", f"calibration:operator:{today}", cal,
@@ -172,6 +183,13 @@ upsert_knowledge_fact("calibration", f"calibration:operator:{today}", cal,
 
 `cal` feeds STEP 2B (rule decay) and the STEP 5 output. A category whose metric is
 `degrading` means its current rules are NOT working — list them for review.
+
+> **v1.4 — response calibration.** The `kind="response"` facts (data-sync v12.7) add
+> `acted_rate` / `ignored_rate` / `overridden_rate` over the same window. They measure the
+> human's *reaction* to what the operator surfaced (orthogonal to the ranking verdicts):
+> high `ignored_rate` = the operator is surfacing noise; high `overridden_rate` = its
+> classifications are wrong. These feed a **surface-only** advisory in STEP 2B — never an
+> auto-archive, since the signal is operator-global, not attributable to one rule.
 
 ---
 
@@ -372,6 +390,21 @@ for rule in active_rules:                 # existing-rules read from STEP 1
     if deg and key not in archived:
         upsert_knowledge_fact("operator_rule", key, {**c, "effectiveness": "review"})
         review.append(key)
+
+# v1.4 — global response-health advisory (surface-only; NEVER auto-archive on a global signal,
+# since acted/ignored/overridden are operator-wide, not attributable to a single rule).
+resp_review = []
+if cal.get("ignored_rate") is not None and cal["ignored_rate"] >= 0.5 \
+   and cal["trend"].get("ignored_rate") == "degrading":
+    resp_review.append(
+        f"ignored_rate={cal['ignored_rate']} & degrading — the operator is surfacing low-value "
+        "items; review the noisiest NON-GOV rule categories (reply_detection/other) for decay.")
+if cal.get("overridden_rate") is not None and cal["overridden_rate"] >= 0.3 \
+   and cal["trend"].get("overridden_rate") == "degrading":
+    resp_review.append(
+        f"overridden_rate={cal['overridden_rate']} & degrading — classifications are being "
+        "reversed; review decision_class / reply_detection rules for miscalibration.")
+# Advisory only — surfaced in STEP 5. Does NOT gate auto-merge and NEVER touches governance rules.
 ```
 
 ⛔ Governance / VN-GOV rules are NEVER archived or proposed for retire — hard guarded
@@ -496,6 +529,7 @@ write_action(
 
 Eval score trend (14d): <score series> → <improving|flat|degrading>
 Calibration (14d): ranking_precision <x> (<trend>) | over_rate <x> (<trend>) | under_rate <x> (<trend>) | risk_hit_rate <x> | n=<actions>/<risks>
+Response (14d): acted <x> (<trend>) · ignored <x> (<trend>) · overridden <x> (<trend>) | n=<responses>   ⭐ v1.4
 Recall (14d): <recall> (<trend>) | ahead <a> · late <l> · missed <m> of <n> materialized incidents
 
 ## Rules promoted/merged (<N>)
@@ -512,6 +546,7 @@ Recall (14d): <recall> (<trend>) | ahead <a> · late <l> · missed <m> of <n> ma
 - archived (stale, non-gov, sev<8): <keys>
 - propose retire (stale, high-sev): <keys>
 - review (calibration degrading): <keys>
+- ⚠️ response-health advisory (v1.4, surface-only): <resp_review items, or omit if none>
 - protected (governance — never touched): <count>
 
 ## Version drift (<N>)
@@ -556,6 +591,7 @@ Auto-suggested: when eval-review STEP 3F flags a recurring check failure.
 
 | Version | Change |
 |---|---|
+| v1.4 | **Loop v2.1 — consume the dense response ledger (2026-06-25).** P2 Stage B: the consumer for omni-data-sync v12.7 STEP 7A0-B. STEP 1B now buckets the `kind="response"` outcome facts (a third bucket alongside action/risk — previously inert) and computes `acted_rate` / `ignored_rate` / `overridden_rate` over the 14d window, each with trend vs the prior calibration snapshot (acted higher-is-better; ignored/overridden lower-is-better), folded into the same daily `calibration` fact (no new fact_type/table; one existing upsert). STEP 2B gains a **surface-only** response-health advisory: `ignored_rate ≥0.5 & degrading` → operator surfacing noise (review noisiest NON-GOV categories for decay); `overridden_rate ≥0.3 & degrading` → classifications being reversed (review decision_class/reply_detection). ⛔ The advisory NEVER auto-archives (the signal is operator-global, not attributable to one rule), NEVER gates auto-merge, and NEVER touches governance rules — the existing hard guard is untouched. STEP 5 output gains a `Response (14d)` line + the advisory under Rule decay. Also reconciles the long-standing version-of-record drift: frontmatter `version` was stale at 1.2 while the body shipped v1.3 — now coherent at **1.4** across frontmatter / SKILL_VERSION / H1. Registry catch-up 1.2→**1.4** in omni-config §10 follows (clears the deferred 1.3 row in the same step). No utils/protected change. |
 | v1.3 | **Git-native tiered auto-merge (2026-06-24).** STEP 3 rewritten from export-only "propose patch" to a git-native PR flow governed by omni-config §19 `PATCH_AUTOMERGE_POLICY`. New 3.0 reads §19 + a circuit breaker (2 consecutive degrading eval/recall trends → force all patches Tier-2 + open a needs-human config kill-switch PR). 3.3 `classify_tier`: Tier-1 = single non-protected skill, ≤40 changed lines / 1 file, occ≥3, auto-merge enabled → label `automerge:eligible` + `gh pr merge --auto` (merges only on a green `omni-skill-eval` check); everything else (PROTECTED files/content, sev-only rules, over-cap diffs, tripped breaker) → Tier-2 `needs-human`. 3.4 dual-mode: `git` (routine clone, writable, `gh`) opens the PR; `export` (Cowork, read-only mount) preserves the ≤v1.2 outputs-export + present_files fallback. 3.5 companion §10 registry-bump PR is ALWAYS needs-human — code fix ships auto, human ratifies the version ledger. STEP 5 audit logs `{rule_key, skill, tier, pr_url, label, merged}` + breaker state. Guardrails rewritten: never push main, never auto-merge Tier-2/protected/governance, never auto-merge without green eval. Config handshake → 1.13. Registers in §10 when this file ships. | New STEP 1C scores RECALL, the blind spot Loop v2 left open: detects materialized incident/blocker events from raw `source_items` (urgency/tags/keyword heuristic), matches each to its earliest prior `risks` flag (market+module / ≥2-token overlap / feature_key), and classifies flagged-ahead (lead ≥`LEARNING_RECALL_LEAD_MIN_DAYS`=1d) vs late vs missed → `recall = ahead/(ahead+late+missed)` with trend vs prior. Recurring missed clusters (≥2× same market/feature) promote `category="risk"` "flag earlier" rules via STEP 2 — vigilance-only, never gate/weaken/governance. Recall block merged into the same daily `calibration` fact (one extra upsert; no new fact_type/table). STEP 5 gains a Recall line + Top-missed section. Mined independent of the sparse `outcome_signal` pipeline, so it works immediately. STEP 1C.1 excludes governance/capacity/SOW items (hardened by a live dry-run that mis-caught a "Mongo SOW cost" item as an incident). Handshake → config 1.11 (registers learning 1.2 + adds §10B `LEARNING_RECALL_LEAD_MIN_DAYS`). |
 | v1.1 | **Loop v2 — calibration + rule decay (Gate 3)** (2026-06-14). New STEP 1B reads `outcome_signal` facts (from omni-data-sync v12.3) → computes ranking_precision / over_rate / under_rate / risk_hit_rate with trend vs prior, writes `calibration` fact (180d). New STEP 2B rule decay: autonomous staleness-archive (non-gov, sev<8, >45d unreinforced), high-sev stale PROPOSED only, effectiveness `review` flag from degrading calibration. ⛔ Hard governance guard (never archive/propose VN-GOV/gov rules). Output gains Calibration line + Rule decay section. Handshake bumped to utils v11.2 / config v1.8. Requires omni-data-sync v12.3 emitting outcome_signal. |
 | v1.0 | Initial. Feedback capture convention, 14d aggregation, ≥2× rule promotion to knowledge_facts(operator_rule), briefing/EOD injection contract (STEP 0A2), human-approved skill patch pipeline, version drift audit vs omni-config §10, trend reporting, hygiene expiry. |
