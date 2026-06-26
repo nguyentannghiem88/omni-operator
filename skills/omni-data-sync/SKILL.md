@@ -1,6 +1,6 @@
 ---
 name: omni-data-sync
-description: "Centralized data fetch for OMNI program (Supabase-only; Mem0 retired). v12.6: STEP 2C SENT-RECONCILIATION — matches open reply/follow-up actions against Sent Items back to each action's creation date (not just the sync window) and auto-closes (done/replied) when Nghiem's reply post-dates the inbound ask; fixes stale carryovers. v12.5: STEP 7A-DEDUP — structural duplicate-decision merge (FULL only): auto-supersedes unambiguous same-market+module+token-set dups via superseded_by (non-destructive, idempotent, fail-open), hard-guards governance/capacity rows, queues cross-module near-misses for hygiene; summary +deduped/hygiene_review. STEP 4F: ClickUp comments mandatory in FULL/LIGHTWEIGHT. STEP 7: build context pack + complete sync run. Requires omni-utils v11.2 + omni-config v1.5. Triggers: 'sync data', 'refresh data', 'fetch latest', 'run data sync', 'update memory from sources', or when cache stale (>2h). [Full version history in changelog table below.]"
+description: "Centralized data fetch for OMNI program (Supabase-only; Mem0 retired). v12.7: STEP 7A0-B DENSE OUTCOME LEDGER — emits response-verdict `outcome_signal` facts (kind=response: acted/ignored/overridden) for every surfaced action, covering the ignored/overridden items the terminal-only v12.3 capture missed; a non-colliding bucket (no calibration pollution), consumed by omni-operator-learning next. v12.6: STEP 2C SENT-RECONCILIATION — matches open reply/follow-up actions vs Sent Items back to each action's creation date, auto-closes when the reply post-dates the ask. v12.5: STEP 7A-DEDUP — structural duplicate-decision merge (FULL only, superseded_by, governance-guarded). STEP 4F: ClickUp comments mandatory in FULL/LIGHTWEIGHT. STEP 7: build context pack + complete sync run. Requires omni-utils v11.2 + omni-config v1.5. Triggers: 'sync data', 'refresh data', 'fetch latest', 'run data sync', 'update memory from sources', or when cache stale. [Full version history in changelog table below.]"
 ---
 
 # OMNI Centralized Data Sync
@@ -1925,6 +1925,84 @@ except Exception as e:
 > First run backfills the last 14 days of already-closed items once; thereafter
 > incremental. Consumed by omni-operator-learning (calibration + rule decay) — Gate 3.
 
+### STEP 7A0-B — Dense response-outcome ledger (Loop v2.1) ⭐ v12.7
+
+STEP 7A0 only scores items that reached a **terminal** state, on the **ranking** dimension
+(hit/over/under). Items the human *ignores* (lets age) or *overrides* (reclassify / supersede
+without a clean terminal status) emit nothing — the sparseness omni-operator-learning STEP 1B
+itself flags ("independent of the still-sparse outcome_signal pipeline"). This pass densifies the
+ledger: it assigns a **response verdict** (acted / ignored / overridden) to every surfaced action
+in the 14-day window and writes it as an `outcome_signal` fact with **`kind="response"`** — a
+THIRD bucket that STEP 1B's `kind=="action"`/`"risk"` filters currently ignore, so it **cannot
+pollute the existing ranking calibration**. omni-operator-learning reads it in a later edit
+(Stage B: acted_rate / ignored_rate / overridden_rate). **Idempotent** (upsert on
+`out:resp:<key>`; a verdict may evolve ignored→acted across runs). **Fail-open: a ledger error
+must NEVER block sync completion.** Runs every mode. No new table/column, no new human burden —
+it only re-derives from existing columns + the STEP 2C / STEP 2B / 7A-DEDUP stamps.
+
+```python
+# Signal sources (re-derived, never re-computed elsewhere):
+#   acted      ← status done/replied/closed   (incl. STEP 2C sent-reconciliation auto-close)
+#   overridden ← status superseded/cancelled/rejected/needs_review  OR  raw_json.superseded_by set
+#   ignored    ← self-improve STEP 2B stamp raw_json.autoage_run  OR  long-open (created >21d, still open)
+#   pending    ← still open, not aged → NO fact written (enters the ledger only when it resolves)
+from datetime import datetime, timezone, timedelta
+gmt7 = timezone(timedelta(hours=7))
+resp = {"acted": 0, "ignored": 0, "overridden": 0}
+try:
+    rows = supabase_sql(r"""
+      SELECT a.action_key, a.title, a.owner, a.priority, a.status, a.source_type,
+             a.module, a.market, a.created_at, a.updated_at,
+             CASE
+               WHEN lower(coalesce(a.status,'')) IN ('done','replied','closed','complete','completed')
+                 THEN 'acted'
+               WHEN lower(coalesce(a.status,'')) IN ('superseded','cancelled','canceled','rejected','needs_review','duplicate')
+                 OR coalesce(a.raw_json->>'superseded_by','') <> ''
+                 THEN 'overridden'
+               WHEN (a.raw_json ? 'autoage_run')
+                 OR (lower(coalesce(a.status,'')) IN ('open','active','pending','todo','in_progress','')
+                     AND a.created_at < now() - interval '21 days')
+                 THEN 'ignored'
+               ELSE 'pending'
+             END AS verdict
+      FROM actions a
+      WHERE (a.updated_at >= now() - interval '14 days'
+             OR a.created_at >= now() - interval '14 days')
+        AND coalesce(a.action_type,'') NOT IN ('SYNC_LOG','HEARTBEAT')
+    """) or []
+    for r in rows:
+        v = r["verdict"]
+        if v == "pending":                 # no signal yet — don't write
+            continue
+        days = None
+        try:
+            c, u = r.get("created_at"), r.get("updated_at")
+            if c and u:
+                days = (datetime.fromisoformat(str(u)) - datetime.fromisoformat(str(c))).days
+        except Exception:
+            pass
+        upsert_knowledge_fact("outcome_signal", f"out:resp:{r['action_key']}", {
+            "kind": "response", "ref": r["action_key"], "title": r.get("title"),
+            "predicted_priority": r.get("priority"), "owner": r.get("owner"),
+            "final_status": r.get("status"), "source_type": r.get("source_type"),
+            "module": r.get("module"), "market": r.get("market"),
+            "days_open": days, "verdict": v, "category": "response",
+            "captured_at": datetime.now(gmt7).isoformat(),
+        }, scope=(r.get("module") or "global"),
+           source_skill="omni-data-sync:loop-v2.1",
+           expires_at=(datetime.now(gmt7) + timedelta(days=120)).isoformat())
+        resp[v] += 1
+    print(f"[STEP 7A0-B] response_ledger: {resp}")
+except Exception as e:
+    print(f"[STEP 7A0-B] response ledger skipped (fail-open): {e}")
+```
+
+> Dense by design: an action lands a verdict the moment it resolves to acted/ignored/overridden,
+> not only on a clean terminal-vs-prediction match. `pending` items stay out until they resolve,
+> so the table is bounded. The verdict is pure read-only telemetry — it never surfaces to a client,
+> never alters routing, never touches governance decisions; observing a governance item's response
+> is fine (calibration precision is global; governance ROUTING is untouched).
+
 ### STEP 7A-DEDUP — Durable-record duplicate merge (decisions) ⭐ v12.5 — FULL mode only
 
 **Why:** `decision_key` embeds `source_type` (`email:` / `teams_message:` / `clickup_comment:`),
@@ -2057,6 +2135,7 @@ complete_sync_run(
         f"actions:{len(clickup_actions)+len(teams_actions)+len(comment_actions)+len(reply_actions)} | "
         f"risks:{len(clickup_actions)+len(teams_risks)+len(comment_risks)} | "
         f"outcomes:{outcome.get('actions',0)+outcome.get('risks',0)} | "
+        f"responses:acted={resp.get('acted',0)}/ignored={resp.get('ignored',0)}/overridden={resp.get('overridden',0)} | "
         f"deduped:{deduped_n} | hygiene_review:{len(dedup_flags)} | "
         f"sources_failed:{','.join(sources_failed) or 'none'}"
     ),
@@ -2216,6 +2295,7 @@ Then call `cleanup_old_raw_items(retention_days=7)` and `cleanup_stale_knowledge
 
 | Version | Change |
 |---|---|
+| v12.7 | **STEP 7A0-B — dense response-outcome ledger (Loop v2.1)** (2026-06-25). Closes the precision loop's data gap: STEP 7A0 (v12.3) scores only items reaching a TERMINAL state on the RANKING dimension (hit/over/under), so items the human IGNORES (lets age) or OVERRIDES (reclassifies/supersedes without a clean terminal status) emit nothing — the sparseness omni-operator-learning STEP 1B itself flags. New STEP 7A0-B assigns a RESPONSE verdict (acted/ignored/overridden) to every surfaced action in the 14d window and writes an `outcome_signal` fact with **kind="response"** (fact_key `out:resp:<action_key>`). Crucially kind="response" is a THIRD bucket — STEP 1B only buckets `kind=="action"`/`"risk"`, so these facts are INERT to the current ranking calibration (zero pollution); the operator-learning consumer is a separate later edit (Stage B). Verdict re-derived from existing signals only (status; raw_json.superseded_by; self-improve STEP 2B raw_json.autoage_run stamp; long-open created>21d) — no new table/column, no new helper (calls existing upsert_knowledge_fact), no omni-utils (protected) change, no new human burden. Idempotent (upsert; verdict may evolve ignored→acted), fail-open (never blocks sync), runs every mode, pure read-only telemetry (never surfaces to client, never alters routing/governance). STEP 7B summary gains `responses:acted=A/ignored=I/overridden=O`. Manual human-reviewed edit (single non-protected file; Tier-1-class). Registry bump 12.5→**12.7** in omni-config §10 follows (clears the deferred 12.6 row too). |
 | v12.6 | **STEP 2C — sent-vs-open-actions reconciliation** (2026-06-23). Root-cause fix for stale `reply-needed`/`follow-up` carryovers (operator correction 2026-06-23: Andrea SA-Loop reply-action surfaced as open although already answered in Sent Items; broader sweep closed 8 / superseded 17 / flagged 64 needs_review, P1 open 68→23). Cause: STEP 2/2B sent fetch is window-scoped, so a reply sent before the window but after the action was created is invisible; nothing reconciled sent mail against open reply actions. New STEP 2C (FULL/LIGHTWEIGHT) loads open email-sourced reply/follow-up actions, does its OWN sent fetch back to the oldest open action's date (NOT the sync window), and auto-closes (status=done, reply_status=replied) on a confident thread match (conversationId or normalized-subject) where sent_at > inbound_ask_at. Heuristic-only matches → needs_review, never auto-closed; governance/capacity rows require an explicit conversationId match. Fail-open + idempotent; out of scope for clickup_task/ADO/calendar-prep. Summary gains `sent_reconciled:N | reconcile_review:N`. Pairs with operator_rule rule:sync:stale-action-supersede (STEP 0A2 behavioral guard). No utils/config DDL change; registry bump 12.5→12.6 in omni-config §10 follows on approval. |
 | v12.5 | **STEP 7A-DEDUP — structural duplicate-decision merge** (2026-06-21). Root-cause fix for the recurring "SA-pricing/MM-deploy/ID-deploy duplicate decision rows" that operator eval flagged for Memory Hygiene daily (06-14→21) but were never cleared. Cause: `decision_key` embeds `source_type`, so the same decision from email+teams+comment yields distinct keys that `upsert_decisions()` on-key cannot collapse. New STEP 7A-DEDUP (FULL mode only, after 7A0, before 7A) runs a post-upsert semantic merge: AUTO tier supersedes losers only in unambiguous clusters sharing identical `(market, module, normalized-token-set)` after stripping date prefix + pure status words, via the dedicated `superseded_by` column (non-destructive — no DELETE; decisions CHECK has no 'superseded' status). HARD GUARD: governance/capacity rows (`sow|capacity|fte|mongodb|son|scope|cost|separate|offline|migration`) are NEVER auto-merged. FLAG tier queues cross-module/near-miss clusters for manual hygiene. Idempotent + fail-open (never blocks sync). Summary gains `deduped:N | hygiene_review:N`. Dry-run on live data: 2 clean auto-merges (MM customer-module REP, SA pricing OMNI), governance clusters correctly skipped. Risks intentionally out of scope (auto-resolving a live risk is unsafe). Downstream contract: decision readers MUST filter `superseded_by IS NULL` (validate omni-daily-briefing/omni-eod-review/context-pack builder before relying on the pass). No utils/config dependency change; registry bump 12.4→12.5 in omni-config §10 follows on approval. |
 |---|---|
