@@ -1,7 +1,7 @@
 ---
 name: omni-config
-version: "1.15"
-description: "Centralized config for all OMNI skills. READ-ONLY — never execute directly. All skills read this file first to get shared constants: stakeholders, modules, OPCOs, Teams/ClickUp IDs, cache thresholds, signal taxonomy, Vietnamese keywords, FEATURE_REGISTRY (OPCO+feature rollup seed), §18 AUTONOMOUS SCHEDULE + intraday pulse job + EVENT_TICKS event-reaction contract (read by omni-orchestrator), and §19 PATCH_AUTOMERGE_POLICY (safety contract for git-native skill-patch PRs + tiered auto-merge, read by omni-operator-learning). One edit here updates all skills. Version: CONFIG_VERSION = '1.15'."
+version: "1.17"
+description: "Centralized config for all OMNI skills. READ-ONLY — never execute directly. All skills read this file first to get shared constants: stakeholders, modules, OPCOs, Teams/ClickUp IDs, cache thresholds, signal taxonomy, Vietnamese keywords, FEATURE_REGISTRY (OPCO+feature rollup seed), §18 AUTONOMOUS SCHEDULE + intraday pulse job + EVENT_TICKS event-reaction contract (read by omni-orchestrator), and §19 PATCH_AUTOMERGE_POLICY (safety contract for git-native skill-patch PRs + tiered auto-merge, read by omni-operator-learning). One edit here updates all skills. Version: CONFIG_VERSION = '1.17'."
 ---
 
 # OMNI Shared Configuration
@@ -15,7 +15,7 @@ description: "Centralized config for all OMNI skills. READ-ONLY — never execut
 ## VERSION CONTRACT
 
 ```python
-CONFIG_VERSION = "1.15"
+CONFIG_VERSION = "1.17"
 # Increment on every edit. Consumer skills should log which version they last tested against.
 ```
 
@@ -23,6 +23,8 @@ CONFIG_VERSION = "1.15"
 
 | Version | Change |
 |---|---|
+| 1.17 | **Register omni-operator-learning 1.4 — P2 Stage B consumer (2026-06-25).** Registry-only bump accompanying the ship of `omni-operator-learning` v1.4 (STEP 1B consumes the dense `kind="response"` ledger from data-sync v12.7 → acted_rate/ignored_rate/overridden_rate; STEP 2B surface-only response-health advisory). `EXPECTED_SKILL_VERSIONS`: omni-operator-learning **1.2→1.4** — catches up the deferred 1.3 row (held per the hold pattern) in the same step, clearing the last known drift; config self-row **1.16→1.17**. No constants/logic changed. |
+| 1.16 | **Register omni-data-sync 12.7 — P2 dense outcome ledger (2026-06-25).** Registry-only bump accompanying the ship of `omni-data-sync` v12.7 (new STEP 7A0-B: dense response-verdict `outcome_signal` facts, kind="response", feeding the precision loop). `EXPECTED_SKILL_VERSIONS`: omni-data-sync **12.5→12.7** — catches up the deferred 12.6 row (whose registry bump was left pending per its changelog) in the same step, so the drift audit returns to 0 once data-sync 12.7 is uploaded. config self-row **1.15→1.16**. No constants/logic changed. |
 | 1.15 | **Register omni-orchestrator 1.1 — event-tick lock-step (2026-06-25).** Registry-only bump accompanying the Stage-2 ship of `omni-orchestrator` v1.1 (adds `trigger='event'` handling that reads the §18 `EVENT_TICKS` contract added in 1.14). `EXPECTED_SKILL_VERSIONS`: omni-orchestrator **1.0→1.1**, config self-row **1.14→1.15**. No constants/logic changed (§18 EVENT_TICKS already shipped in 1.14). Kept in lock-step so the drift audit stays clean once both files are uploaded together. |
 | 1.14 | **§18 Intraday auto-trigger + EVENT_TICKS contract (2026-06-25).** P1 of the always-on operator. (a) Added a third `SCHEDULE` job `intraday` (08:00–18:30, any weekday) running a staleness-gated LIGHTWEIGHT `sync_intraday` step then `pulse` — so on each hourly cron tick the agent self-refreshes only when cache is stale (gate `INTRADAY_SYNC_GATE_H=3`) and always surfaces a read-only focus pulse. Cadence is set by a new external **OMNI-Pulse** hourly routine; needs **ZERO orchestrator code change** — `compute_plan` already iterates `SCHEDULE` generically and pulse/sync are not `once_per_day`. (b) Added declarative `EVENT_TICKS` block — the spec for event-driven reactions (P0 incident, client email, governance comment) the orchestrator implements in Stage 2 (v1.1): each event names a detection source, an ordered fast-path, and inherits the SAME governance guard (draft/surface only, never send/commit). (c) `SCHEDULE_TICK_CHECKS`+`SCHEDULE_RULES` gain intraday/event notes. Frontmatter version reconciled 1.12→**1.14** (was stale vs CONFIG_VERSION). `EXPECTED_SKILL_VERSIONS` self-row 1.13→**1.14**; `omni-orchestrator` deliberately held at 1.0 (registers to 1.1 only when its Stage-2 SKILL.md ships — established hold pattern, no false drift). No other skill constants/logic changed. |
 | 1.13 | **§19 Skill Patch Auto-Merge Policy (2026-06-24).** Added Section 19 `PATCH_REPO` / `PATCH_TIERS` / `PROTECTED_PATCH_FILES` / `PROTECTED_PATCH_CONTENT` / `PATCH_AUTOMERGE_POLICY` / `AUTOMERGE_ENABLED` — the safety contract for the git-native self-update loop (`omni-operator-learning` v1.3, shipping next). Tier 0 behavioral `operator_rule`s unchanged (no git). Tier 1 = single non-protected skill, ≤40 changed lines / 1 file, occ≥3, auto-merge ONLY on a green `omni-skill-eval` check (≤3/week). Tier 2 = omni-utils / omni-config / omni-orchestrator / governance / multi-file → PR only, human merge. Branch safety stays ON (`claude/` prefix — never push to `main`); circuit breaker disables auto-merge after 2 consecutive degrading eval-score trends. Config self-row 1.12→**1.13**. `omni-operator-learning` NOT yet registered to 1.3 — registers when its SKILL.md ships (established hold pattern), so no false drift row. No constants/logic changed for any existing skill. |
@@ -239,10 +241,10 @@ ADO_PAT_FILE = r"C:\Users\tamqu\Documents\Claude\Projects\W\.secrets\ado_pat.txt
 # and continue (do not abort). omni-operator-learning audits drift weekly.
 
 EXPECTED_SKILL_VERSIONS = {
-    "omni-config":                  "1.15",
+    "omni-config":                  "1.17",
     "omni-orchestrator":            "1.1",
     "omni-utils":                   "11.2",
-    "omni-data-sync":               "12.5",
+    "omni-data-sync":               "12.7",
     "omni-email-extractor":         "4.0",
     "omni-sent-analyzer":           "2.0",
     "omni-daily-briefing":          "7.3",
@@ -255,7 +257,7 @@ EXPECTED_SKILL_VERSIONS = {
     "requirement-analyzer-compact": "4.0",
     "draft-email-skill":            "5.0",
     "omni-ai-operator-eval-review": "2.1",
-    "omni-operator-learning":       "1.2",
+    "omni-operator-learning":       "1.4",
     "omni-self-improve":            "1.2",
 }
 
