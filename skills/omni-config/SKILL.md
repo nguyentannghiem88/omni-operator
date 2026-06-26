@@ -1,7 +1,7 @@
 ---
 name: omni-config
-version: "1.12"
-description: "Centralized config for all OMNI skills. READ-ONLY — never execute directly. All skills read this file first to get shared constants: stakeholders, modules, OPCOs, Teams/ClickUp IDs, cache thresholds, signal taxonomy, Vietnamese keywords, FEATURE_REGISTRY (OPCO+feature rollup seed), §18 AUTONOMOUS SCHEDULE (read by omni-orchestrator), and §19 PATCH_AUTOMERGE_POLICY (safety contract for git-native skill-patch PRs + tiered auto-merge, read by omni-operator-learning). One edit here updates all skills. Version: CONFIG_VERSION = '1.13'."
+version: "1.15"
+description: "Centralized config for all OMNI skills. READ-ONLY — never execute directly. All skills read this file first to get shared constants: stakeholders, modules, OPCOs, Teams/ClickUp IDs, cache thresholds, signal taxonomy, Vietnamese keywords, FEATURE_REGISTRY (OPCO+feature rollup seed), §18 AUTONOMOUS SCHEDULE + intraday pulse job + EVENT_TICKS event-reaction contract (read by omni-orchestrator), and §19 PATCH_AUTOMERGE_POLICY (safety contract for git-native skill-patch PRs + tiered auto-merge, read by omni-operator-learning). One edit here updates all skills. Version: CONFIG_VERSION = '1.15'."
 ---
 
 # OMNI Shared Configuration
@@ -15,7 +15,7 @@ description: "Centralized config for all OMNI skills. READ-ONLY — never execut
 ## VERSION CONTRACT
 
 ```python
-CONFIG_VERSION = "1.13"
+CONFIG_VERSION = "1.15"
 # Increment on every edit. Consumer skills should log which version they last tested against.
 ```
 
@@ -23,6 +23,8 @@ CONFIG_VERSION = "1.13"
 
 | Version | Change |
 |---|---|
+| 1.15 | **Register omni-orchestrator 1.1 — event-tick lock-step (2026-06-25).** Registry-only bump accompanying the Stage-2 ship of `omni-orchestrator` v1.1 (adds `trigger='event'` handling that reads the §18 `EVENT_TICKS` contract added in 1.14). `EXPECTED_SKILL_VERSIONS`: omni-orchestrator **1.0→1.1**, config self-row **1.14→1.15**. No constants/logic changed (§18 EVENT_TICKS already shipped in 1.14). Kept in lock-step so the drift audit stays clean once both files are uploaded together. |
+| 1.14 | **§18 Intraday auto-trigger + EVENT_TICKS contract (2026-06-25).** P1 of the always-on operator. (a) Added a third `SCHEDULE` job `intraday` (08:00–18:30, any weekday) running a staleness-gated LIGHTWEIGHT `sync_intraday` step then `pulse` — so on each hourly cron tick the agent self-refreshes only when cache is stale (gate `INTRADAY_SYNC_GATE_H=3`) and always surfaces a read-only focus pulse. Cadence is set by a new external **OMNI-Pulse** hourly routine; needs **ZERO orchestrator code change** — `compute_plan` already iterates `SCHEDULE` generically and pulse/sync are not `once_per_day`. (b) Added declarative `EVENT_TICKS` block — the spec for event-driven reactions (P0 incident, client email, governance comment) the orchestrator implements in Stage 2 (v1.1): each event names a detection source, an ordered fast-path, and inherits the SAME governance guard (draft/surface only, never send/commit). (c) `SCHEDULE_TICK_CHECKS`+`SCHEDULE_RULES` gain intraday/event notes. Frontmatter version reconciled 1.12→**1.14** (was stale vs CONFIG_VERSION). `EXPECTED_SKILL_VERSIONS` self-row 1.13→**1.14**; `omni-orchestrator` deliberately held at 1.0 (registers to 1.1 only when its Stage-2 SKILL.md ships — established hold pattern, no false drift). No other skill constants/logic changed. |
 | 1.13 | **§19 Skill Patch Auto-Merge Policy (2026-06-24).** Added Section 19 `PATCH_REPO` / `PATCH_TIERS` / `PROTECTED_PATCH_FILES` / `PROTECTED_PATCH_CONTENT` / `PATCH_AUTOMERGE_POLICY` / `AUTOMERGE_ENABLED` — the safety contract for the git-native self-update loop (`omni-operator-learning` v1.3, shipping next). Tier 0 behavioral `operator_rule`s unchanged (no git). Tier 1 = single non-protected skill, ≤40 changed lines / 1 file, occ≥3, auto-merge ONLY on a green `omni-skill-eval` check (≤3/week). Tier 2 = omni-utils / omni-config / omni-orchestrator / governance / multi-file → PR only, human merge. Branch safety stays ON (`claude/` prefix — never push to `main`); circuit breaker disables auto-merge after 2 consecutive degrading eval-score trends. Config self-row 1.12→**1.13**. `omni-operator-learning` NOT yet registered to 1.3 — registers when its SKILL.md ships (established hold pattern), so no false drift row. No constants/logic changed for any existing skill. |
 | 1.12 | **Registry reconcile — register omni-orchestrator + fix config self-row (2026-06-24).** `EXPECTED_SKILL_VERSIONS`: omni-config self-row 1.9→**1.12** (was never advanced when config went 1.10→1.11) and added **omni-orchestrator 1.0** (held back until its SKILL.md shipped; now live and running as a cloud routine). Registry-only edit — no constants/logic changed. Clears the two drift rows the first routine tick surfaced; drift audit should now report 0. |
 | 1.11 | **Loop v3 recall registration (2026-06-23).** Registered `omni-operator-learning` 1.1→**1.2** (new STEP 1C Recall Mining: scores recall of materialized incidents flagged-ahead vs missed, promotes vigilance-only 'flag earlier' rules for recurring misses). Added §10B `LEARNING_RECALL_LEAD_MIN_DAYS = 1`. No other constants/logic changed; recall reuses the `calibration` fact + `operator_rule` (no new table). `omni-orchestrator` still pending registration until its file ships. |
@@ -237,8 +239,8 @@ ADO_PAT_FILE = r"C:\Users\tamqu\Documents\Claude\Projects\W\.secrets\ado_pat.txt
 # and continue (do not abort). omni-operator-learning audits drift weekly.
 
 EXPECTED_SKILL_VERSIONS = {
-    "omni-config":                  "1.13",
-    "omni-orchestrator":            "1.0",
+    "omni-config":                  "1.15",
+    "omni-orchestrator":            "1.1",
     "omni-utils":                   "11.2",
     "omni-data-sync":               "12.5",
     "omni-email-extractor":         "4.0",
@@ -639,6 +641,13 @@ never *that* a run happens.
 ```python
 SCHEDULE_TZ = "Asia/Bangkok"   # GMT+7 — every window below is local wall-clock
 
+# Intraday auto-trigger tuning (v1.14). The intraday job fires on every OMNI-Pulse cron tick
+# inside its window; cadence = how often that external routine ticks (recommended: hourly).
+INTRADAY_SYNC_GATE_H = 3       # intraday LIGHTWEIGHT sync only actually fetches if cache older than this;
+                               # otherwise the step logs skip(reason='cache_fresh') and only pulse runs.
+                               # Keeps ClickUp-comment / Outlook calls gentle under an hourly tick.
+INTRADAY_WINDOW = ("08:00", "18:30")   # business-hours envelope for the intraday job
+
 # Each job = a time window + an ordered list of steps. The orchestrator runs the steps in
 # order, skipping any once-per-day/week step already logged 'done' in agent_runs today/this week.
 SCHEDULE = [
@@ -675,6 +684,26 @@ SCHEDULE = [
              "once_per_week": True, "staleness_gate_h": None},
         ],
     },
+    {
+        # v1.14 — intraday "always-on" job. Runs on EVERY tick inside its window (cadence set by the
+        # external OMNI-Pulse hourly routine), NOT once_per_day. Two steps:
+        #   1) sync_intraday — LIGHTWEIGHT, staleness-gated: fetches ONLY if cache > INTRADAY_SYNC_GATE_H,
+        #      else skip(cache_fresh). This is what makes pulse event-AWARE (catches a P0/email/comment
+        #      that landed since morning) without hammering ClickUp/Outlook every hour.
+        #   2) pulse — read-only ~150-word "what to focus on RIGHT NOW" (omni-pulse). No writes, no API
+        #      mutation. Surfaces new P0/P1, governance signals, and reply count.
+        # compute_plan already handles this with NO orchestrator code change: neither step is
+        # once_per_day, so both stay eligible on each in-window tick; the gate suppresses redundant syncs.
+        "job": "intraday",
+        "window": INTRADAY_WINDOW,             # ("08:00","18:30")
+        "weekday": None,                       # any day (set ["MO".."FR"] at the routine if weekdays-only)
+        "steps": [
+            {"run_kind": "sync_intraday", "skill": "omni-data-sync", "mode": "LIGHTWEIGHT",
+             "once_per_day": False, "staleness_gate_h": INTRADAY_SYNC_GATE_H},
+            {"run_kind": "pulse",         "skill": "omni-pulse",      "mode": None,
+             "once_per_day": False, "staleness_gate_h": None},
+        ],
+    },
 ]
 
 # Cheap surface-only checks run on EVERY tick, regardless of window (no side effects, no auto-act):
@@ -683,6 +712,8 @@ SCHEDULE_TICK_CHECKS = {
     "drift_surface": "any on-disk skill version ≠ EXPECTED_SKILL_VERSIONS (§10) → surface (NEVER auto-fix)",
     "degraded_warn": "cache_check() degraded → warn + recommend manual sync (NEVER silent-proceed)",
     "next_due":      "report next_due_at across all jobs so a human knows when the agent next acts",
+    "intraday_note": "the intraday job's pulse runs every in-window tick; its surface output IS the "
+                     "intraday focus check — keep the orchestrator header ≤6 lines and let pulse print below",
 }
 
 # Orchestration safety contract (NON-NEGOTIABLE):
@@ -701,6 +732,70 @@ SCHEDULE_RULES = {
                       "Peter CC). Autonomy is read / prepare / learn — never external commitment.",
     "manual_override":"`run operator` (manual trigger) runs the current window's due steps immediately, "
                       "ignoring wall-clock window but still honoring idempotency + staleness gates.",
+    "intraday":       "the intraday job is NOT once_per_day — it runs on every in-window tick; the "
+                      "INTRADAY_SYNC_GATE_H gate is what prevents redundant fetches under an hourly cron.",
+    "event_trigger":  "trigger='event' (Stage 2, omni-orchestrator v1.1+) does NOT consult the time "
+                      "windows — it runs the matching EVENT_TICKS fast-path immediately, then STOPS. "
+                      "It inherits every governance guard below: draft/surface only, never send/commit.",
+}
+
+# ─────────────────────────────────────────────────────────────────────────────────────────────
+# EVENT-DRIVEN REACTION CONTRACT (v1.14 — declarative spec; IMPLEMENTED by omni-orchestrator v1.1, Stage 2)
+# ─────────────────────────────────────────────────────────────────────────────────────────────
+# The clock-based SCHEDULE makes the operator *periodic*. EVENT_TICKS makes it *reactive*: an
+# external webhook/poller fires `run operator` with trigger='event' and an `event` payload
+# {type, ref, source}. The orchestrator matches event.type here and runs `fast_path` in order,
+# writing one agent_runs row (run_kind='event:<type>') — then STOPS (no schedule sweep on an event tick).
+#
+# ⛔ AUTONOMY IS UNCHANGED. Every fast_path is read / prepare / DRAFT / surface only. An event tick
+#    may pre-draft a reply via draft-email-skill and surface it, but a HUMAN still sends. No event
+#    type may send external comms, confirm a GOVERNANCE_REVIEW item, or commit scope/capacity/SOW.
+#    Governance events route to VN-GOV (Ha Hoang → YiLun → Andrea, Peter CC) — surfaced, never auto-acted.
+#
+# `detect` describes where the firing signal comes from (the external runner is responsible for the
+# webhook/poll; until Stage-2 webhooks exist, the intraday job's gated sync+pulse already catches the
+# same signals on the next hourly tick — EVENT_TICKS just makes the reaction immediate instead of ≤1h).
+EVENT_TICKS = {
+    "p0_incident": {
+        "detect":     "source_items arrives is_urgent=true OR tag/keyword in {incident,blocker,prod-down,"
+                      "outage,p1,regression,rollback} (same heuristic as omni-operator-learning STEP 1C.1)",
+        "fast_path":  ["omni-data-sync(LIGHTWEIGHT, ungated)", "omni-pulse"],
+        "surface":    "headline the incident + owner + nearest related risk; if a prior risk flagged it, "
+                      "note lead-time (feeds recall). Create/raise a P0 action — internal only.",
+        "autonomy":   "draft/surface only; NEVER auto-message the client or commit a fix ETA.",
+    },
+    "client_email": {
+        "detect":     "new inbound source_type='email' from a client-side stakeholder (HEINEKEN_STAKEHOLDERS) "
+                      "with a direct question or same-day ask",
+        "fast_path":  ["omni-email-extractor(single thread)", "draft-email-skill(reply DRAFT)"],
+        "surface":    "show the extracted ask + a ready reply draft in Nghiem's style (Hi @Name / Regards, "
+                      "Nghiem). Queue a reply-required action.",
+        "autonomy":   "DRAFT ONLY — the draft is surfaced for human send. Never auto-send. "
+                      "If the ask touches capacity/SOW/scope → route to VN-GOV, do NOT draft a direct reply to Andrea.",
+    },
+    "governance_comment": {
+        "detect":     "ClickUp comment OR Teams message mentioning capacity / FTE / SOW / scope / cost / "
+                      "rate basis, OR authored by Andrea/YiLun on a governance thread",
+        "fast_path":  ["omni-data-sync(LIGHTWEIGHT, ungated, comments on)", "omni-pulse"],
+        "surface":    "flag as GOVERNANCE_REVIEW, route per VN-GOV (Delivery → Ha Hoang → YiLun → Andrea, "
+                      "Peter CC). Surface a prepared internal summary for Nghiem — NEVER a client-facing draft.",
+        "autonomy":   "⛔ HARD STOP on external action. Constitution-level. Surface + route only.",
+    },
+    "ado_build_break": {
+        "detect":     "ado_work_item / pipeline signal indicating a failed build or broken main on Heineken\\OMS",
+        "fast_path":  ["ado-oms-knowledge-sync(incremental)", "omni-pulse"],
+        "surface":    "name the failing item + likely owner from recent ADO activity; raise an internal P1 action.",
+        "autonomy":   "surface only; never push code, never edit the pipeline.",
+    },
+}
+EVENT_TICK_RULES = {
+    "single_shot":   "an event tick runs ONLY its fast_path then stops — it never sweeps the time SCHEDULE.",
+    "idempotency":   "dedupe on (event.type, event.ref): if an agent_runs row for this ref exists today, "
+                     "log skip(reason='event_seen') — a webhook retry must not double-draft.",
+    "ledger":        "one agent_runs row run_kind='event:<type>', trigger='event', raw_json={ref,source}.",
+    "governance":    "the §18 SCHEDULE_RULES['governance'] guard applies in full to every event fast_path.",
+    "fallback":      "no webhook infra yet → the intraday job already catches these signals within ≤1 cron "
+                     "interval; EVENT_TICKS only upgrades latency from ~hourly to immediate once Stage 2 ships.",
 }
 ```
 
