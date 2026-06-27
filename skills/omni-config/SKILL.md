@@ -1,7 +1,7 @@
 ---
 name: omni-config
-version: "1.18"
-description: "Centralized config for all OMNI skills. READ-ONLY — never execute directly. All skills read this file first to get shared constants: stakeholders, modules, OPCOs, Teams/ClickUp IDs, cache thresholds, signal taxonomy, Vietnamese keywords, FEATURE_REGISTRY (OPCO+feature rollup seed), §18 AUTONOMOUS SCHEDULE + intraday pulse job + EVENT_TICKS event-reaction contract (read by omni-orchestrator), and §19 PATCH_AUTOMERGE_POLICY (safety contract for git-native skill-patch PRs + tiered auto-merge, read by omni-operator-learning). One edit here updates all skills. Version: CONFIG_VERSION = '1.18'."
+version: "1.19"
+description: "Centralized config for all OMNI skills. READ-ONLY — never execute directly. All skills read this file first to get shared constants: stakeholders, modules, OPCOs, Teams/ClickUp IDs, cache thresholds, signal taxonomy, Vietnamese keywords, FEATURE_REGISTRY (OPCO+feature rollup seed), §18 AUTONOMOUS SCHEDULE + intraday pulse job + EVENT_TICKS event-reaction contract (read by omni-orchestrator), and §19 PATCH_AUTOMERGE_POLICY (safety contract for git-native skill-patch PRs + tiered auto-merge, read by omni-operator-learning). One edit here updates all skills. Version: CONFIG_VERSION = '1.19'."
 ---
 
 # OMNI Shared Configuration
@@ -15,7 +15,7 @@ description: "Centralized config for all OMNI skills. READ-ONLY — never execut
 ## VERSION CONTRACT
 
 ```python
-CONFIG_VERSION = "1.18"
+CONFIG_VERSION = "1.19"
 # Increment on every edit. Consumer skills should log which version they last tested against.
 ```
 
@@ -23,6 +23,7 @@ CONFIG_VERSION = "1.18"
 
 | Version | Change |
 |---|---|
+| 1.19 | **Register omni-self-improve 1.3 — P5 mid-week escalation (2026-06-25).** Registry-only bump accompanying the ship of `omni-self-improve` v1.3 (STEP 4 escalates one hot structural candidate sev≥8 & occ≥3 mid-week by invoking omni-operator-learning, §19-gated; flag-query precedence fix). `EXPECTED_SKILL_VERSIONS`: omni-self-improve **1.2→1.3**; config self-row **1.18→1.19**. No constants/logic changed. (Escalation knobs ESC_* are local to self-improve in Stage A; candidates for a future §10B kill-switch.) |
 | 1.18 | **Register omni-pulse 1.2 — P3 agent-health heartbeat (2026-06-25).** Registry-only bump accompanying the ship of `omni-pulse` v1.2 (new STEP 1B: read-only 🟢/🟡/🔴 heartbeat over agent_runs — last-tick/missed-window, consecutive fails, runs-today, sync age, learning-trend; business-hours-aware). `EXPECTED_SKILL_VERSIONS`: omni-pulse **1.1→1.2**; config self-row **1.17→1.18**. No constants/logic changed. |
 | 1.17 | **Register omni-operator-learning 1.4 — P2 Stage B consumer (2026-06-25).** Registry-only bump accompanying the ship of `omni-operator-learning` v1.4 (STEP 1B consumes the dense `kind="response"` ledger from data-sync v12.7 → acted_rate/ignored_rate/overridden_rate; STEP 2B surface-only response-health advisory). `EXPECTED_SKILL_VERSIONS`: omni-operator-learning **1.2→1.4** — catches up the deferred 1.3 row (held per the hold pattern) in the same step, clearing the last known drift; config self-row **1.16→1.17**. No constants/logic changed. |
 | 1.16 | **Register omni-data-sync 12.7 — P2 dense outcome ledger (2026-06-25).** Registry-only bump accompanying the ship of `omni-data-sync` v12.7 (new STEP 7A0-B: dense response-verdict `outcome_signal` facts, kind="response", feeding the precision loop). `EXPECTED_SKILL_VERSIONS`: omni-data-sync **12.5→12.7** — catches up the deferred 12.6 row (whose registry bump was left pending per its changelog) in the same step, so the drift audit returns to 0 once data-sync 12.7 is uploaded. config self-row **1.15→1.16**. No constants/logic changed. |
@@ -242,7 +243,7 @@ ADO_PAT_FILE = r"C:\Users\tamqu\Documents\Claude\Projects\W\.secrets\ado_pat.txt
 # and continue (do not abort). omni-operator-learning audits drift weekly.
 
 EXPECTED_SKILL_VERSIONS = {
-    "omni-config":                  "1.18",
+    "omni-config":                  "1.19",
     "omni-orchestrator":            "1.1",
     "omni-utils":                   "11.2",
     "omni-data-sync":               "12.7",
@@ -259,7 +260,7 @@ EXPECTED_SKILL_VERSIONS = {
     "draft-email-skill":            "5.0",
     "omni-ai-operator-eval-review": "2.1",
     "omni-operator-learning":       "1.4",
-    "omni-self-improve":            "1.2",
+    "omni-self-improve":            "1.3",
 }
 
 ## 10B. OPERATOR LEARNING CONFIG (used by omni-operator-learning)
