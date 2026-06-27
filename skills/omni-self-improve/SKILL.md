@@ -1,10 +1,10 @@
 ---
 name: omni-self-improve
 version: "1.2"
-description: "Post-run auto-train hook for the OMNI AI Operator. Closes the fast BEHAVIORAL learning loop automatically after each briefing/EOD with no manual trigger: light inline-eval of the output just produced → promote ≥2× issue clusters to operator_rule (auto-applied at briefing/EOD STEP 0A2 next run) → drift audit (surface only) → flag structural patch candidates for omni-operator-learning. v1.2: STEP 2B weekly-gated reversible backlog auto-age — message-sourced actions (email/teams/comment) P1→P2 at 10d idle, non-client-facing P2→aged-stale at 21d, client-facing flagged stale_verify only; never touches clickup_task/ADO/calendar/governance; reversible via raw_json.autoage_run. Token-gated: stays silent when no new signal. NEVER edits SKILL.md files and NEVER weakens governance rules. Triggers automatically as the final step of omni-eod-review (P2) and omni-daily-briefing (P3); also on demand: 'self improve', 'run self-improve', 'auto-train', 'close the loop'."
+description: "Post-run auto-train hook for the OMNI AI Operator. Closes the fast BEHAVIORAL loop after each briefing/EOD: light inline-eval → promote ≥2× issue clusters to operator_rule (auto-applied at STEP 0A2 next run) → drift audit (surface only) → flag/escalate structural candidates for omni-operator-learning. v1.3: STEP 4 mid-week structural ESCALATION — one hot candidate (sev≥8 AND occ≥3, non-governance, ≤1/day, 7d-deduped, never Monday) invokes omni-operator-learning so a patch is drafted + §19 Tier-gated now instead of waiting for the weekly run; self-improve still edits no SKILL.md (ESC_AUTO_INVOKE kill-switch); also fixes the flag-query precedence bug. v1.2: STEP 2B weekly-gated reversible backlog auto-age, never touching clickup_task/ADO/calendar/governance. Token-gated: silent when no new signal. NEVER edits SKILL.md and NEVER weakens governance. Triggers as the final step of omni-eod-review and omni-daily-briefing; also: 'self improve', 'run self-improve', 'auto-train', 'close the loop'."
 ---
 
-# OMNI Self-Improve — v1.2
+# OMNI Self-Improve — v1.3
 
 **Purpose:** Make the operator self-training without a manual trigger. After every
 briefing/EOD, run the cheap half of the learning loop so behavioral fixes apply from
@@ -20,7 +20,7 @@ briefing/EOD output → [this hook] light inline-eval → promote ≥2× → ope
 | Tier | What it does | Autonomy |
 |---|---|---|
 | **Behavioral** | promote/merge `operator_rule`; rules auto-injected at STEP 0A2 | ✅ FULLY AUTONOMOUS |
-| **Structural** | edit a SKILL.md step | ⛔ NEVER here — only *flagged*; drafted+exported by omni-operator-learning, re-uploaded by Nghiem |
+| **Structural** | edit a SKILL.md step | ⛔ NEVER here — only *flagged*, or (v1.3) *escalated* by INVOKING omni-operator-learning, which drafts + §19 Tier-gates the patch. self-improve itself never opens a SKILL.md; the structural change never originates here. |
 
 `/mnt/skills/user/` is read-only at runtime. This skill **cannot and must not** rewrite
 skill files. It changes *behavior* (rules), never *code*. Governance rules (YiLun→Andrea
@@ -30,8 +30,8 @@ routing, capacity protocol) are constitution-level — may be reinforced, NEVER 
 
 ## ⚠️ READ FIRST — SHARED CONFIG + UTILS
 
-1. `/mnt/skills/user/omni-config/SKILL.md` → `EXPECTED_SKILL_VERSIONS` (§10), `LEARNING_*` (§10B), CONFIG_VERSION = "1.6"
-2. `/mnt/skills/user/omni-utils/SKILL.md` → `upsert_knowledge_fact()`, `write_action()`, `supabase_sql()`, UTILITY_VERSION = "11.1"
+1. `/mnt/skills/user/omni-config/SKILL.md` → `EXPECTED_SKILL_VERSIONS` (§10), `LEARNING_*` (§10B), CONFIG_VERSION = "1.18"
+2. `/mnt/skills/user/omni-utils/SKILL.md` → `upsert_knowledge_fact()`, `write_action()`, `supabase_sql()`, UTILITY_VERSION = "11.2"
 
 ⛔ Mem0 retired. Supabase only. No new tables — uses `operator_eval_reviews`,
 `knowledge_facts`, `actions`. No new columns.
@@ -41,7 +41,7 @@ routing, capacity protocol) are constitution-level — may be reinforced, NEVER 
 ## STEP 0 — BOOTSTRAP + TOKEN GATE
 
 ```python
-SKILL_VERSION = "1.2"
+SKILL_VERSION = "1.3"
 # 0A. user_time_v0 → TODAY, now_str (+07)
 # 0B. Read last self-improve cursor from actions (no new storage):
 ```
@@ -186,16 +186,79 @@ human/omni-operator-learning action.
 
 ---
 
-## STEP 4 — FLAG STRUCTURAL CANDIDATES (hand-off, no drafting)
+## STEP 4 — FLAG + ESCALATE STRUCTURAL CANDIDATES ⭐ v1.3
 
-```sql
-SELECT fact_key, content FROM knowledge_facts
-WHERE fact_type='operator_rule' AND status='active'
-  AND (content->>'occurrences')::int >= 3 OR (content->>'severity')::int >= 8;
+Flags recurring structural candidates (unchanged), and now ESCALATES a single *hot* one
+mid-week instead of letting it wait for Monday's weekly run — by **invoking**
+omni-operator-learning, never by editing a SKILL.md here.
+
+```python
+# P5 escalation knobs (Stage A: local; candidates for omni-config §10B later).
+ESC_SEV_MIN   = 8     # severity floor for mid-week escalation
+ESC_OCC_MIN   = 3     # occurrence floor (BOTH must hold — a strict subset of the flag bar)
+ESC_DEDUPE_DAYS = 7   # never re-escalate the same rule within a week
+ESC_MAX_PER_DAY = 1   # global throttle: at most one mid-week escalation per day
+ESC_AUTO_INVOKE = True  # False → escalation only LOUDLY surfaces + stamps; never auto-invokes learning
+
+# Flag query — NOTE the parentheses: the pre-v1.3 query "AND a OR b" let severity>=8 match rows
+# of ANY fact_type/status (operator precedence bug). Fixed to AND (occ>=3 OR sev>=8).
+cands = supabase_sql("""
+  SELECT fact_key, content FROM knowledge_facts
+  WHERE fact_type='operator_rule' AND status='active'
+    AND ( (content->>'occurrences')::int >= 3 OR (content->>'severity')::int >= 8 );
+""") or []
+
+def _gov(c):  # never escalate governance / protected-target / VN-GOV rules
+    ts = (c.get('target_skill') or '').lower()
+    return (c.get('category') == 'governance' or c.get('module') == 'VN-GOV'
+            or 'governance' in ts or ts in ('omni-config','omni-utils','omni-orchestrator'))
+
+struct_list = [{"rule": r["fact_key"], "skill": r["content"].get("target_skill"),
+                "sev": int(r["content"].get("severity", 0) or 0),
+                "occ": int(r["content"].get("occurrences", 0) or 0)}
+               for r in cands if r["content"].get("target_skill")]   # flag (hand-off unchanged)
+
+def _esc_ok(c):
+    sev = int(c.get('severity', 0) or 0); occ = int(c.get('occurrences', 0) or 0)
+    if sev < ESC_SEV_MIN or occ < ESC_OCC_MIN or not c.get('target_skill') or _gov(c):
+        return False
+    last = c.get('escalated_at')                      # 7-day dedupe
+    try:
+        if last and (now_local - datetime.fromisoformat(last)).days < ESC_DEDUPE_DAYS:
+            return False
+    except Exception:
+        pass
+    return True
+
+escalated = []
+hot = sorted([(r["fact_key"], r["content"]) for r in cands if _esc_ok(r["content"])],
+             key=lambda x: (int(x[1].get('severity', 0)), int(x[1].get('occurrences', 0))),
+             reverse=True)
+n_today = (supabase_sql("""SELECT count(*) AS n FROM knowledge_facts
+             WHERE fact_type='operator_rule' AND (content->>'escalated_at')::date = CURRENT_DATE;""")
+           or [{"n": 0}])[0]["n"]
+
+# Throttle: skip Mondays (the weekly run covers it) and obey the per-day cap.
+if hot and now_local.weekday() != 0 and n_today < ESC_MAX_PER_DAY:
+    fk, c = hot[0]
+    # 1) stamp dedupe + audit marker on the rule (a behavioral write — NOT a SKILL.md edit)
+    upsert_knowledge_fact("operator_rule", fk, {**c, "escalated_at": now_str,
+        "escalated_run": caller, "escalated_reason": f"sev{c.get('severity')}/occ{c.get('occurrences')} mid-week"})
+    if ESC_AUTO_INVOKE:
+        # 2) DELEGATE — omni-operator-learning (not self-improve) drafts + §19 Tier-gates the patch:
+        #    Tier-1 (single non-protected skill, ≤40 lines, occ≥3, GREEN omni-skill-eval) auto-merges;
+        #    Tier-2 / protected / governance → human export. self-improve opens NO SKILL.md.
+        read("/mnt/skills/user/omni-operator-learning/SKILL.md")
+        run_skill("omni-operator-learning", targeted_rule=fk, reason="midweek_escalation")
+        # Stage B will add a single-rule SCOPED mode keyed on targeted_rule; until it ships, the
+        # standard on-demand pipeline runs and processes this rule through STEP 2→3, still §19-gated.
+    escalated.append(fk)
 ```
-For any such rule with a clear `target_skill` → list it as a candidate and tell Nghiem:
-`structural fix candidate — run omni-operator-learning to draft the patch`.
-This skill never opens a SKILL.md for editing.
+
+Flagging is unchanged for everything that does not clear the strict bar: list each as
+`structural fix candidate — run omni-operator-learning to draft the patch`. The escalation
+path only ever *invokes* learning; the circuit breaker + ≤3-auto-merge/week cap in §19 still
+bound what can actually merge. This skill never opens a SKILL.md for editing.
 
 ---
 
@@ -204,9 +267,10 @@ This skill never opens a SKILL.md for editing.
 ```python
 write_action(
   skill="LEARNING", action_type="SELF_IMPROVE_RUN",
-  summary=f"Self-improve ({caller}) — evals:{n_eval_issues}, promoted:{n_promoted}, merged:{n_merged}, drift:{n_drift}, struct_candidates:{n_struct}",
+  summary=f"Self-improve ({caller}) — evals:{n_eval_issues}, promoted:{n_promoted}, merged:{n_merged}, drift:{n_drift}, struct_candidates:{n_struct}, escalated:{len(escalated)}",
   metadata={"caller": caller, "eval_id": eval_id, "promoted": promoted_keys,
             "merged": merged_keys, "drift": drift_list, "struct_candidates": struct_list,
+            "escalated": escalated,
             "cursor_prev": cursor, "ran_at": now_str},
 )
 ```
@@ -227,6 +291,7 @@ Active (only show non-empty lines):
    🧹 Auto-age: <-N P1→P2, N P2 closed, N cf-flagged, or omit if gate skipped>
    ⚠️ Drift: <skill on-disk≠expected, or "none">
    🧩 Structural candidates: <skill — rule, or "none"> → run omni-operator-learning
+   🚀 Escalated mid-week: <skill — rule> → omni-operator-learning running now (§19-gated) · or omit if none
 ```
 Max ~5 lines. Never reprint the briefing/EOD content.
 
@@ -237,7 +302,7 @@ Max ~5 lines. Never reprint the briefing/EOD content.
 - ⛔ NEVER edit `/mnt/skills/user/` files. Behavioral tier only.
 - ⛔ NEVER promote from a single occurrence (min 2). No overfitting to one run.
 - ⛔ NEVER weaken governance/constitution rules — reinforce only.
-- ⛔ NEVER auto-bump the §10 registry or auto-apply a structural patch — flag only.
+- ⛔ NEVER edit a SKILL.md or auto-bump the §10 registry. v1.3 may ESCALATE at most ONE qualifying hot candidate (sev≥ESC_SEV_MIN AND occ≥ESC_OCC_MIN, non-governance, non-protected target, ≤ESC_MAX_PER_DAY/day, deduped ESC_DEDUPE_DAYS, never on Monday) by INVOKING omni-operator-learning — which drafts the patch under its OWN §19 Tier gate (Tier-1 auto-merge only on a green omni-skill-eval; Tier-2 / protected / governance → human export). The structural change never originates here, and `ESC_AUTO_INVOKE=False` downgrades escalation to surface-only.
 - Token gate is mandatory: idle when no new signal; idle is free and silent.
 - Never fabricate eval issues — clean output → clean PASS record.
 - No new Supabase tables/columns — eval/knowledge_facts/actions only.
@@ -268,6 +333,7 @@ logged and read back as cursor. Do NOT wire into EOD/briefing until all five pas
 
 | Version | Change |
 |---|---|
+| v1.3 | **STEP 4 mid-week structural escalation (P5) + SQL precedence fix (2026-06-25).** A high-severity recurring issue no longer waits up to 7 days for Monday's weekly run. STEP 4 now ESCALATES at most one *hot* candidate (severity≥`ESC_SEV_MIN`=8 **AND** occurrences≥`ESC_OCC_MIN`=3 — a strict subset of the flag bar; non-governance; non-protected `target_skill`; not escalated within `ESC_DEDUPE_DAYS`=7; ≤`ESC_MAX_PER_DAY`=1/day; never on Monday) by **invoking** omni-operator-learning, which drafts + §19 Tier-gates the patch. self-improve still opens NO SKILL.md — the structural change never originates here, and the §19 circuit-breaker + ≤3-auto-merge/week cap still bound what can merge. Dedupe/audit via a `escalated_at`/`escalated_run` stamp on the rule fact (behavioral write, no new table/column). `ESC_AUTO_INVOKE=False` kill-switch downgrades to surface-only. Also FIXES a pre-existing operator-precedence bug in the flag query (`AND a OR b` → `AND (a OR b)`) that let `severity≥8` match facts of any type/status. Autonomy-boundary table + guardrail + OUTPUT (`🚀 Escalated`) + STEP 5 log (`escalated:N`) updated. Handshake refs refreshed (config 1.6→1.18, utils 11.1→11.2). Stage B (omni-operator-learning) will add a single-rule SCOPED mode keyed on `targeted_rule`; until then the standard on-demand pipeline runs, still fully gated. |
 | v1.2 | **STEP 2B weekly backlog auto-age (2026-06-14).** Added a bounded, reversible data-hygiene pass for message-sourced actions that have no completion-detection path. Weekly-gated (runs ≤1×/7d via max `raw_json.autoage_run` check) so it stays light despite firing after every briefing/EOD. Tier 1: open P1 idle ≥10d → P2. Tier 2: open non-client-facing P2 idle ≥21d → `aged-stale`. Client-facing stale P2 → flagged `stale_verify`, never auto-closed. Scope locked to email/sent_email/teams/teams_message/clickup_comment; NEVER touches clickup_task/ado/calendar/governance/VN-GOV. Status/priority + raw_json audit only — never deletes; idempotent. Guardrail updated with explicit hygiene carve-out; OUTPUT gains an auto-age line. Follows the one-time 2026-06-14 manual P1 grooming (136→73) to keep the backlog self-cleaning. No new tables/columns. |
 | v1.1 | **Gate token fix (P4).** STEP 0C `new_output` now detects the real run log token — `actions WHERE skill IN ('EOD','BRIEFING') AND action_type='REVIEWED'` — instead of the non-existent `EOD_RUN`/`BRIEFING_RUN`. No behavior change on the hook path (caller passes new_output=True), but standalone on-demand `self improve` now gates correctly against the last briefing/EOD run. Registered in omni-config §10 v1.8. |
 | v1.0 | Initial. Post-run behavioral auto-train hook: token gate (cursor from actions.SELF_IMPROVE_RUN), 5-check light inline eval → operator_eval_reviews, delta-window ≥2× promotion to operator_rule (auto-applied at STEP 0A2), drift audit (surface only), structural-candidate flagging (hand-off to omni-operator-learning). Hard autonomy boundary: never edits SKILL.md, never weakens governance, never promotes single-occurrence. Registered in omni-config §10 v1.6. |
