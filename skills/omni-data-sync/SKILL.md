@@ -1,6 +1,6 @@
 ---
 name: omni-data-sync
-description: "Centralized data fetch for OMNI program (Supabase-only; Mem0 retired). v12.7: STEP 7A0-B DENSE OUTCOME LEDGER — emits response-verdict `outcome_signal` facts (kind=response: acted/ignored/overridden) for every surfaced action, covering the ignored/overridden items the terminal-only v12.3 capture missed; a non-colliding bucket (no calibration pollution), consumed by omni-operator-learning next. v12.6: STEP 2C SENT-RECONCILIATION — matches open reply/follow-up actions vs Sent Items back to each action's creation date, auto-closes when the reply post-dates the ask. v12.5: STEP 7A-DEDUP — structural duplicate-decision merge (FULL only, superseded_by, governance-guarded). STEP 4F: ClickUp comments mandatory in FULL/LIGHTWEIGHT. STEP 7: build context pack + complete sync run. Requires omni-utils v11.2 + omni-config v1.5. Triggers: 'sync data', 'refresh data', 'fetch latest', 'run data sync', 'update memory from sources', or when cache stale. [Full version history in changelog table below.]"
+description: "Centralized data fetch for OMNI program (Supabase-only; Mem0 retired). v12.8: STEP 7A-WI AUTO-FILL APPROVAL INBOX — after actions+context pack, calls idempotent generate_work_items() to refill work_items (ready_to_send/needs_your_call/governance-held); surface-only, never posts/sends, governance+scope guards live in the DB function. v12.7: STEP 7A0-B DENSE OUTCOME LEDGER — response-verdict outcome_signal facts (acted/ignored/overridden) for every surfaced action, consumed by omni-operator-learning. v12.6: STEP 2C SENT-RECONCILIATION auto-closes reply/follow-up actions when reply post-dates the ask. v12.5: STEP 7A-DEDUP structural duplicate-decision merge (FULL only, governance-guarded). STEP 4F: ClickUp comments mandatory in FULL/LIGHTWEIGHT. Requires omni-utils v11.2 + omni-config v1.5. Triggers: 'sync data', 'refresh data', 'fetch latest', 'run data sync', 'update memory from sources', or when cache stale."
 ---
 
 # OMNI Centralized Data Sync
@@ -95,6 +95,7 @@ STEP 6  → resolve_feature_key() + rollup_feature_status() → feature_status  
         → auto-supersede satisfied actions (confidence-gated)
 STEP 7  → build_context_pack_from_supabase()   (includes feature_rollup)
         → upsert_context_pack("briefing")
+STEP 7A-WI → generate_work_items()             → refill Approval Inbox (idempotent, surface-only)  ⭐ v12.8
         → complete_sync_run()
 STEP 7B → cleanup_old_raw_items()          → rolling retention
 ```
@@ -2116,6 +2117,37 @@ upsert_context_pack(
 print(f"[STEP 7A] supabase_context_pack_upserted: type=briefing date={run_date}")
 ```
 
+### STEP 7A-WI — Refill Approval Inbox (work_items) ⭐ v12.8
+
+Runs in FULL and LIGHTWEIGHT after actions are upserted (STEP 4F) and the context
+pack is built. Calls the DB-side `generate_work_items()` function, which derives
+new operator work_items from open `actions` and is **idempotent** — it inserts only
+actions not already represented (`NOT EXISTS` on `source_action_key`), so re-runs
+never duplicate and never disturb curated/approved rows.
+
+Governance + scope guards live INSIDE the function (gov-keyword scan over
+`title || draft_reply` → `is_governance=true`, lane `needs_your_call`, never
+`ready_to_send`; mirror sources `ado_work_item`/`clickup_task`/sync excluded;
+priority normalized). This step only invokes it and logs the lane deltas.
+
+```python
+# STEP 7A-WI — self-populating Approval Inbox
+try:
+    wi = supabase_sql("SELECT * FROM generate_work_items();")  # returns created/ready/gov/ncall
+    row = wi[0] if wi else {}
+    print(f"[STEP 7A-WI] work_items refilled: "
+          f"created={row.get('created',0)} ready_to_send={row.get('ready',0)} "
+          f"governance_held={row.get('gov',0)} needs_your_call={row.get('ncall',0)}")
+    # surface-only: never auto-posts here. Posting is a separate, approval-gated step.
+except Exception as e:
+    print(f"[STEP 7A-WI] work_items refill skipped (fail-open): {e}")
+```
+
+> **Boundary:** this step NEVER posts, sends, or approves anything. It only makes
+> new drafts *visible* in the `ready_to_send` lane for Nghiem to approve. Auto-post
+> is a separate approval-gated routine (`post_approved_clickup_replies`), never
+> invoked from sync.
+
 ### STEP 7B — Complete sync run in Supabase
 
 ```python
@@ -2295,7 +2327,7 @@ Then call `cleanup_old_raw_items(retention_days=7)` and `cleanup_stale_knowledge
 
 | Version | Change |
 |---|---|
-| v12.7 | **STEP 7A0-B — dense response-outcome ledger (Loop v2.1)** (2026-06-25). Closes the precision loop's data gap: STEP 7A0 (v12.3) scores only items reaching a TERMINAL state on the RANKING dimension (hit/over/under), so items the human IGNORES (lets age) or OVERRIDES (reclassifies/supersedes without a clean terminal status) emit nothing — the sparseness omni-operator-learning STEP 1B itself flags. New STEP 7A0-B assigns a RESPONSE verdict (acted/ignored/overridden) to every surfaced action in the 14d window and writes an `outcome_signal` fact with **kind="response"** (fact_key `out:resp:<action_key>`). Crucially kind="response" is a THIRD bucket — STEP 1B only buckets `kind=="action"`/`"risk"`, so these facts are INERT to the current ranking calibration (zero pollution); the operator-learning consumer is a separate later edit (Stage B). Verdict re-derived from existing signals only (status; raw_json.superseded_by; self-improve STEP 2B raw_json.autoage_run stamp; long-open created>21d) — no new table/column, no new helper (calls existing upsert_knowledge_fact), no omni-utils (protected) change, no new human burden. Idempotent (upsert; verdict may evolve ignored→acted), fail-open (never blocks sync), runs every mode, pure read-only telemetry (never surfaces to client, never alters routing/governance). STEP 7B summary gains `responses:acted=A/ignored=I/overridden=O`. Manual human-reviewed edit (single non-protected file; Tier-1-class). Registry bump 12.5→**12.7** in omni-config §10 follows (clears the deferred 12.6 row too). |
+| v12.8 | **STEP 7A-WI — auto-fill Approval Inbox** (2026-06-29). Closes the "inbox never refills on its own" gap: until now `work_items` was populated only by manual invocation, so new ClickUp/email/Teams drafts never surfaced for approval between sessions. New STEP 7A-WI (FULL + LIGHTWEIGHT, after STEP 7A context-pack build, before STEP 7B) calls the DB-side `generate_work_items()` function — idempotent (`NOT EXISTS` on `source_action_key`, so re-runs never duplicate and never disturb curated/approved/posted rows). Governance + scope guards live INSIDE the function: gov-keyword scan over `title || draft_reply` → `is_governance=true`, lane `needs_your_call`, NEVER `ready_to_send`; mirror sources (`ado_work_item`/`clickup_task`/sync/req/ado*) excluded; priority normalized (urgent/high→P1, 1/p1→P1, 2/p2→P2…); the ready_to_send send-gate requires a real draft (>40 chars, greeting/sign-off, multi-sentence) so self-notes can't masquerade as sendable. STEP **surface-only**: it makes new drafts visible for Nghiem to approve; it NEVER posts, sends, or approves. Auto-post is a separate approval-gated routine (`post_approved_clickup_replies`, clickup_comment + non-gov only) and is NEVER invoked from sync. Fail-open (never blocks sync). STEP 7A-WI log line gains `created/ready_to_send/governance_held/needs_your_call`. Manual human-reviewed edit (single non-protected file; Tier-1-class). Registry bump 12.7→12.8 in omni-config §10 follows. | Closes the precision loop's data gap: STEP 7A0 (v12.3) scores only items reaching a TERMINAL state on the RANKING dimension (hit/over/under), so items the human IGNORES (lets age) or OVERRIDES (reclassifies/supersedes without a clean terminal status) emit nothing — the sparseness omni-operator-learning STEP 1B itself flags. New STEP 7A0-B assigns a RESPONSE verdict (acted/ignored/overridden) to every surfaced action in the 14d window and writes an `outcome_signal` fact with **kind="response"** (fact_key `out:resp:<action_key>`). Crucially kind="response" is a THIRD bucket — STEP 1B only buckets `kind=="action"`/`"risk"`, so these facts are INERT to the current ranking calibration (zero pollution); the operator-learning consumer is a separate later edit (Stage B). Verdict re-derived from existing signals only (status; raw_json.superseded_by; self-improve STEP 2B raw_json.autoage_run stamp; long-open created>21d) — no new table/column, no new helper (calls existing upsert_knowledge_fact), no omni-utils (protected) change, no new human burden. Idempotent (upsert; verdict may evolve ignored→acted), fail-open (never blocks sync), runs every mode, pure read-only telemetry (never surfaces to client, never alters routing/governance). STEP 7B summary gains `responses:acted=A/ignored=I/overridden=O`. Manual human-reviewed edit (single non-protected file; Tier-1-class). Registry bump 12.5→**12.7** in omni-config §10 follows (clears the deferred 12.6 row too). |
 | v12.6 | **STEP 2C — sent-vs-open-actions reconciliation** (2026-06-23). Root-cause fix for stale `reply-needed`/`follow-up` carryovers (operator correction 2026-06-23: Andrea SA-Loop reply-action surfaced as open although already answered in Sent Items; broader sweep closed 8 / superseded 17 / flagged 64 needs_review, P1 open 68→23). Cause: STEP 2/2B sent fetch is window-scoped, so a reply sent before the window but after the action was created is invisible; nothing reconciled sent mail against open reply actions. New STEP 2C (FULL/LIGHTWEIGHT) loads open email-sourced reply/follow-up actions, does its OWN sent fetch back to the oldest open action's date (NOT the sync window), and auto-closes (status=done, reply_status=replied) on a confident thread match (conversationId or normalized-subject) where sent_at > inbound_ask_at. Heuristic-only matches → needs_review, never auto-closed; governance/capacity rows require an explicit conversationId match. Fail-open + idempotent; out of scope for clickup_task/ADO/calendar-prep. Summary gains `sent_reconciled:N | reconcile_review:N`. Pairs with operator_rule rule:sync:stale-action-supersede (STEP 0A2 behavioral guard). No utils/config DDL change; registry bump 12.5→12.6 in omni-config §10 follows on approval. |
 | v12.5 | **STEP 7A-DEDUP — structural duplicate-decision merge** (2026-06-21). Root-cause fix for the recurring "SA-pricing/MM-deploy/ID-deploy duplicate decision rows" that operator eval flagged for Memory Hygiene daily (06-14→21) but were never cleared. Cause: `decision_key` embeds `source_type`, so the same decision from email+teams+comment yields distinct keys that `upsert_decisions()` on-key cannot collapse. New STEP 7A-DEDUP (FULL mode only, after 7A0, before 7A) runs a post-upsert semantic merge: AUTO tier supersedes losers only in unambiguous clusters sharing identical `(market, module, normalized-token-set)` after stripping date prefix + pure status words, via the dedicated `superseded_by` column (non-destructive — no DELETE; decisions CHECK has no 'superseded' status). HARD GUARD: governance/capacity rows (`sow|capacity|fte|mongodb|son|scope|cost|separate|offline|migration`) are NEVER auto-merged. FLAG tier queues cross-module/near-miss clusters for manual hygiene. Idempotent + fail-open (never blocks sync). Summary gains `deduped:N | hygiene_review:N`. Dry-run on live data: 2 clean auto-merges (MM customer-module REP, SA pricing OMNI), governance clusters correctly skipped. Risks intentionally out of scope (auto-resolving a live risk is unsafe). Downstream contract: decision readers MUST filter `superseded_by IS NULL` (validate omni-daily-briefing/omni-eod-review/context-pack builder before relying on the pass). No utils/config dependency change; registry bump 12.4→12.5 in omni-config §10 follows on approval. |
 |---|---|
