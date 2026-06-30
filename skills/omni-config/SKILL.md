@@ -658,7 +658,7 @@ INTRADAY_WINDOW = ("08:00", "18:30")   # business-hours envelope for the intrada
 # "ado_sync due — run it manually" and writes NOTHING to ADO. Flip True to allow unattended
 # mirroring — recommended only AFTER the omni-clickup-ado-sync governance/capacity skip guard
 # (P4 Stage B) ships, so a governance/SOW task can never be auto-created as an ADO work item.
-ADO_SYNC_AUTONOMOUS = False
+ADO_SYNC_AUTONOMOUS = True
 ADO_SYNC_WINDOW = ("10:00", "17:00")   # after the 09:00 FULL sync, before EOD — so it mirrors fresh data
 
 # Each job = a time window + an ordered list of steps. The orchestrator runs the steps in
