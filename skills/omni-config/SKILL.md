@@ -1,7 +1,7 @@
 ---
 name: omni-config
-version: "1.19"
-description: "Centralized config for all OMNI skills. READ-ONLY — never execute directly. All skills read this file first to get shared constants: stakeholders, modules, OPCOs, Teams/ClickUp IDs, cache thresholds, signal taxonomy, Vietnamese keywords, FEATURE_REGISTRY (OPCO+feature rollup seed), §18 AUTONOMOUS SCHEDULE + intraday pulse job + EVENT_TICKS event-reaction contract (read by omni-orchestrator), and §19 PATCH_AUTOMERGE_POLICY (safety contract for git-native skill-patch PRs + tiered auto-merge, read by omni-operator-learning). One edit here updates all skills. Version: CONFIG_VERSION = '1.19'."
+version: "1.20"
+description: "Centralized config for all OMNI skills. READ-ONLY — never execute directly. All skills read this file first to get shared constants: stakeholders, modules, OPCOs, Teams/ClickUp IDs, cache thresholds, signal taxonomy, Vietnamese keywords, FEATURE_REGISTRY (OPCO+feature rollup seed), §18 AUTONOMOUS SCHEDULE + intraday pulse job + EVENT_TICKS event-reaction contract + the ADO_SYNC_AUTONOMOUS-gated ClickUp→ADO write job (read by omni-orchestrator), and §19 PATCH_AUTOMERGE_POLICY (safety contract for git-native skill-patch PRs + tiered auto-merge, read by omni-operator-learning). One edit here updates all skills. Version: CONFIG_VERSION = '1.20'."
 ---
 
 # OMNI Shared Configuration
@@ -15,7 +15,7 @@ description: "Centralized config for all OMNI skills. READ-ONLY — never execut
 ## VERSION CONTRACT
 
 ```python
-CONFIG_VERSION = "1.19"
+CONFIG_VERSION = "1.20"
 # Increment on every edit. Consumer skills should log which version they last tested against.
 ```
 
@@ -23,6 +23,7 @@ CONFIG_VERSION = "1.19"
 
 | Version | Change |
 |---|---|
+| 1.20 | **§18 autonomous ClickUp→ADO mirror job — P4 (2026-06-25).** Added a 4th `SCHEDULE` job `ado_sync` (window 10:00–17:00, weekdays, `once_per_day`) running `omni-clickup-ado-sync` — the operator's FIRST and ONLY scheduled WRITE action. Rides the existing **OMNI-Pulse hourly routine** (fires on the first in-window tick after 10:00, post morning FULL sync; skip_done after) — **no new cron routine and ZERO orchestrator/skill code change** (compute_plan iterates SCHEDULE generically; unknown step keys `write_action`/`requires_flag` are ignored by it and read by SCHEDULE_RULES). **SAFE DEFAULT OFF:** new `ADO_SYNC_AUTONOMOUS=False` → the job only SURFACES 'ado_sync due — run it manually' and writes nothing; flip True for unattended mirroring. New `ADO_SYNC_WINDOW`. SCHEDULE_RULES gains `ado_sync_gate` (flag gate; never runs on an event tick) + `ado_sync_bounds` (why an internal, non-client-facing, idempotent one-way mirror is permitted autonomy — NOT a comm/scope/SOW commit; inherits the skill's STEP-0 abort / ACTIVE_STATUSES / dedup / CAP-50 / NEVER-delete; must never mirror governance/capacity/SOW/VN-GOV — enforced by the P4 Stage B skip guard). config self-row 1.19→**1.20**; omni-clickup-ado-sync stays **6.5** (skill unedited in Stage A). |
 | 1.19 | **Register omni-self-improve 1.3 — P5 mid-week escalation (2026-06-25).** Registry-only bump accompanying the ship of `omni-self-improve` v1.3 (STEP 4 escalates one hot structural candidate sev≥8 & occ≥3 mid-week by invoking omni-operator-learning, §19-gated; flag-query precedence fix). `EXPECTED_SKILL_VERSIONS`: omni-self-improve **1.2→1.3**; config self-row **1.18→1.19**. No constants/logic changed. (Escalation knobs ESC_* are local to self-improve in Stage A; candidates for a future §10B kill-switch.) |
 | 1.18 | **Register omni-pulse 1.2 — P3 agent-health heartbeat (2026-06-25).** Registry-only bump accompanying the ship of `omni-pulse` v1.2 (new STEP 1B: read-only 🟢/🟡/🔴 heartbeat over agent_runs — last-tick/missed-window, consecutive fails, runs-today, sync age, learning-trend; business-hours-aware). `EXPECTED_SKILL_VERSIONS`: omni-pulse **1.1→1.2**; config self-row **1.17→1.18**. No constants/logic changed. |
 | 1.17 | **Register omni-operator-learning 1.4 — P2 Stage B consumer (2026-06-25).** Registry-only bump accompanying the ship of `omni-operator-learning` v1.4 (STEP 1B consumes the dense `kind="response"` ledger from data-sync v12.7 → acted_rate/ignored_rate/overridden_rate; STEP 2B surface-only response-health advisory). `EXPECTED_SKILL_VERSIONS`: omni-operator-learning **1.2→1.4** — catches up the deferred 1.3 row (held per the hold pattern) in the same step, clearing the last known drift; config self-row **1.16→1.17**. No constants/logic changed. |
@@ -243,7 +244,7 @@ ADO_PAT_FILE = r"C:\Users\tamqu\Documents\Claude\Projects\W\.secrets\ado_pat.txt
 # and continue (do not abort). omni-operator-learning audits drift weekly.
 
 EXPECTED_SKILL_VERSIONS = {
-    "omni-config":                  "1.19",
+    "omni-config":                  "1.20",
     "omni-orchestrator":            "1.1",
     "omni-utils":                   "11.2",
     "omni-data-sync":               "12.7",
@@ -652,6 +653,14 @@ INTRADAY_SYNC_GATE_H = 3       # intraday LIGHTWEIGHT sync only actually fetches
                                # Keeps ClickUp-comment / Outlook calls gentle under an hourly tick.
 INTRADAY_WINDOW = ("08:00", "18:30")   # business-hours envelope for the intraday job
 
+# Autonomous internal ClickUp→ADO mirror (v1.20 — P4). This is the operator's FIRST and ONLY
+# scheduled WRITE action. SAFE DEFAULT = OFF: while False, the ado_sync job only SURFACES
+# "ado_sync due — run it manually" and writes NOTHING to ADO. Flip True to allow unattended
+# mirroring — recommended only AFTER the omni-clickup-ado-sync governance/capacity skip guard
+# (P4 Stage B) ships, so a governance/SOW task can never be auto-created as an ADO work item.
+ADO_SYNC_AUTONOMOUS = False
+ADO_SYNC_WINDOW = ("10:00", "17:00")   # after the 09:00 FULL sync, before EOD — so it mirrors fresh data
+
 # Each job = a time window + an ordered list of steps. The orchestrator runs the steps in
 # order, skipping any once-per-day/week step already logged 'done' in agent_runs today/this week.
 SCHEDULE = [
@@ -708,6 +717,23 @@ SCHEDULE = [
              "once_per_day": False, "staleness_gate_h": None},
         ],
     },
+    {
+        # v1.20 — autonomous internal ClickUp→ADO mirror (the operator's ONLY scheduled WRITE).
+        # Rides the existing OMNI-Pulse hourly routine: once_per_day + window 10:00–17:00 means it
+        # fires on the first in-window tick after 10:00 (post morning FULL sync) and skip_done after.
+        # NO new cron routine needed. GATED by ADO_SYNC_AUTONOMOUS (default False → surface-only, no
+        # write — see SCHEDULE_RULES['ado_sync_gate']). The skill self-protects (STEP-0 aborts on
+        # missing ClickUp cache, ACTIVE_STATUSES whitelist, title dedup, CAP 50, NEVER-delete).
+        "job": "ado_sync",
+        "window": ADO_SYNC_WINDOW,             # ("10:00","17:00")
+        "weekday": None,                       # weekdays-only is a workday activity; set at the routine
+        "steps": [
+            {"run_kind": "ado_sync", "skill": "omni-clickup-ado-sync", "mode": None,
+             "once_per_day": True, "staleness_gate_h": None,
+             "write_action": True,             # ⚠️ external write — honored per SCHEDULE_RULES
+             "requires_flag": "ADO_SYNC_AUTONOMOUS"},
+        ],
+    },
 ]
 
 # Cheap surface-only checks run on EVERY tick, regardless of window (no side effects, no auto-act):
@@ -741,6 +767,17 @@ SCHEDULE_RULES = {
     "event_trigger":  "trigger='event' (Stage 2, omni-orchestrator v1.1+) does NOT consult the time "
                       "windows — it runs the matching EVENT_TICKS fast-path immediately, then STOPS. "
                       "It inherits every governance guard below: draft/surface only, never send/commit.",
+    "ado_sync_gate":  "the ado_sync step is the operator's FIRST and ONLY autonomous external WRITE "
+                      "(internal ClickUp→ADO mirror). It executes ONLY if ADO_SYNC_AUTONOMOUS is True. "
+                      "While False (default), the orchestrator SURFACES 'ado_sync due — run \"run ado "
+                      "sync\" manually' and writes NOTHING. A `write_action:True` step is never run on "
+                      "a trigger='event' tick — events stay draft/surface-only.",
+    "ado_sync_bounds":"permitted as autonomy because it is INTERNAL, non-client-facing, one-way and "
+                      "idempotent — a mirror of already-created dev tasks, NOT an external comm and NOT "
+                      "a scope/capacity/SOW commitment. It inherits the skill's own guards (STEP-0 abort "
+                      "on missing ClickUp cache, ACTIVE_STATUSES whitelist, title dedup, CAP 50, "
+                      "NEVER-delete). It must NEVER create ADO items for governance/capacity/SOW/VN-GOV "
+                      "tasks — enforced by the omni-clickup-ado-sync skip guard (P4 Stage B).",
 }
 
 # ─────────────────────────────────────────────────────────────────────────────────────────────
