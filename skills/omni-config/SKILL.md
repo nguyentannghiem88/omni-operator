@@ -1,7 +1,7 @@
 ---
 name: omni-config
-version: "1.20"
-description: "Centralized config for all OMNI skills. READ-ONLY — never execute directly. All skills read this file first to get shared constants: stakeholders, modules, OPCOs, Teams/ClickUp IDs, cache thresholds, signal taxonomy, Vietnamese keywords, FEATURE_REGISTRY (OPCO+feature rollup seed), §18 AUTONOMOUS SCHEDULE + intraday pulse job + EVENT_TICKS event-reaction contract + the ADO_SYNC_AUTONOMOUS-gated ClickUp→ADO write job (read by omni-orchestrator), and §19 PATCH_AUTOMERGE_POLICY (safety contract for git-native skill-patch PRs + tiered auto-merge, read by omni-operator-learning). One edit here updates all skills. Version: CONFIG_VERSION = '1.20'."
+version: "1.21"
+description: "Centralized config for all OMNI skills. READ-ONLY — never execute directly. All skills read this file first to get shared constants: stakeholders, modules, OPCOs, Teams/ClickUp IDs, cache thresholds, signal taxonomy, Vietnamese keywords, FEATURE_REGISTRY (OPCO+feature rollup seed), §18 AUTONOMOUS SCHEDULE + intraday pulse job + EVENT_TICKS event-reaction contract + the ADO_SYNC_AUTONOMOUS-gated ClickUp→ADO write job, and the CLICKUP_AUTOPOST_AUTONOMOUS-gated evening ClickUp comment poster + reply-close steps (read by omni-orchestrator), and §19 PATCH_AUTOMERGE_POLICY (safety contract for git-native skill-patch PRs + tiered auto-merge, read by omni-operator-learning). One edit here updates all skills. Version: CONFIG_VERSION = '1.21'."
 ---
 
 # OMNI Shared Configuration
@@ -15,7 +15,7 @@ description: "Centralized config for all OMNI skills. READ-ONLY — never execut
 ## VERSION CONTRACT
 
 ```python
-CONFIG_VERSION = "1.20"
+CONFIG_VERSION = "1.21"
 # Increment on every edit. Consumer skills should log which version they last tested against.
 ```
 
@@ -23,7 +23,7 @@ CONFIG_VERSION = "1.20"
 
 | Version | Change |
 |---|---|
-| 1.20 | **§18 autonomous ClickUp→ADO mirror job — P4 (2026-06-25).** Added a 4th `SCHEDULE` job `ado_sync` (window 10:00–17:00, weekdays, `once_per_day`) running `omni-clickup-ado-sync` — the operator's FIRST and ONLY scheduled WRITE action. Rides the existing **OMNI-Pulse hourly routine** (fires on the first in-window tick after 10:00, post morning FULL sync; skip_done after) — **no new cron routine and ZERO orchestrator/skill code change** (compute_plan iterates SCHEDULE generically; unknown step keys `write_action`/`requires_flag` are ignored by it and read by SCHEDULE_RULES). **SAFE DEFAULT OFF:** new `ADO_SYNC_AUTONOMOUS=False` → the job only SURFACES 'ado_sync due — run it manually' and writes nothing; flip True for unattended mirroring. New `ADO_SYNC_WINDOW`. SCHEDULE_RULES gains `ado_sync_gate` (flag gate; never runs on an event tick) + `ado_sync_bounds` (why an internal, non-client-facing, idempotent one-way mirror is permitted autonomy — NOT a comm/scope/SOW commit; inherits the skill's STEP-0 abort / ACTIVE_STATUSES / dedup / CAP-50 / NEVER-delete; must never mirror governance/capacity/SOW/VN-GOV — enforced by the P4 Stage B skip guard). config self-row 1.19→**1.20**; omni-clickup-ado-sync stays **6.5** (skill unedited in Stage A). |
+| 1.21 | **§18 evening job — approval-gated ClickUp poster + reply-close (2026-06-29).** Registered new skill `omni-clickup-poster` (1.0) and added its two steps as the LAST steps of the `evening` job: `post_replies` (mode=POST) then `close_replies` (mode=CLOSE). POST posts work_items status='approved' + source='clickup_comment' + is_governance=false to their source task, then marks done — the operator's first scheduled EXTERNAL client-facing action, so it is **SAFE DEFAULT OFF** behind new `CLICKUP_AUTOPOST_AUTONOMOUS=False` (surface-only 'N approved replies ready — post manually'; on-demand human-present posting still works). Dual governance gate (is_governance column filter + live draft-body re-scan at post time); governance items structurally cannot enter. CLOSE is reply-ONLY (reactions never close; no time-based soft-close), read+monitor, spawns a follow-up work_item on a new question — always safe, so NOT flag-gated. Also caught up `EXPECTED_SKILL_VERSIONS` **omni-data-sync 12.7→12.8** (STEP 7A-WI auto-fill Approval Inbox, shipped same session). config self-row 1.20→**1.21**. `omni-clickup-poster` registers at 1.0 in lock-step as its SKILL.md ships this session. | Added a 4th `SCHEDULE` job `ado_sync` (window 10:00–17:00, weekdays, `once_per_day`) running `omni-clickup-ado-sync` — the operator's FIRST and ONLY scheduled WRITE action. Rides the existing **OMNI-Pulse hourly routine** (fires on the first in-window tick after 10:00, post morning FULL sync; skip_done after) — **no new cron routine and ZERO orchestrator/skill code change** (compute_plan iterates SCHEDULE generically; unknown step keys `write_action`/`requires_flag` are ignored by it and read by SCHEDULE_RULES). **SAFE DEFAULT OFF:** new `ADO_SYNC_AUTONOMOUS=False` → the job only SURFACES 'ado_sync due — run it manually' and writes nothing; flip True for unattended mirroring. New `ADO_SYNC_WINDOW`. SCHEDULE_RULES gains `ado_sync_gate` (flag gate; never runs on an event tick) + `ado_sync_bounds` (why an internal, non-client-facing, idempotent one-way mirror is permitted autonomy — NOT a comm/scope/SOW commit; inherits the skill's STEP-0 abort / ACTIVE_STATUSES / dedup / CAP-50 / NEVER-delete; must never mirror governance/capacity/SOW/VN-GOV — enforced by the P4 Stage B skip guard). config self-row 1.19→**1.20**; omni-clickup-ado-sync stays **6.5** (skill unedited in Stage A). |
 | 1.19 | **Register omni-self-improve 1.3 — P5 mid-week escalation (2026-06-25).** Registry-only bump accompanying the ship of `omni-self-improve` v1.3 (STEP 4 escalates one hot structural candidate sev≥8 & occ≥3 mid-week by invoking omni-operator-learning, §19-gated; flag-query precedence fix). `EXPECTED_SKILL_VERSIONS`: omni-self-improve **1.2→1.3**; config self-row **1.18→1.19**. No constants/logic changed. (Escalation knobs ESC_* are local to self-improve in Stage A; candidates for a future §10B kill-switch.) |
 | 1.18 | **Register omni-pulse 1.2 — P3 agent-health heartbeat (2026-06-25).** Registry-only bump accompanying the ship of `omni-pulse` v1.2 (new STEP 1B: read-only 🟢/🟡/🔴 heartbeat over agent_runs — last-tick/missed-window, consecutive fails, runs-today, sync age, learning-trend; business-hours-aware). `EXPECTED_SKILL_VERSIONS`: omni-pulse **1.1→1.2**; config self-row **1.17→1.18**. No constants/logic changed. |
 | 1.17 | **Register omni-operator-learning 1.4 — P2 Stage B consumer (2026-06-25).** Registry-only bump accompanying the ship of `omni-operator-learning` v1.4 (STEP 1B consumes the dense `kind="response"` ledger from data-sync v12.7 → acted_rate/ignored_rate/overridden_rate; STEP 2B surface-only response-health advisory). `EXPECTED_SKILL_VERSIONS`: omni-operator-learning **1.2→1.4** — catches up the deferred 1.3 row (held per the hold pattern) in the same step, clearing the last known drift; config self-row **1.16→1.17**. No constants/logic changed. |
@@ -244,10 +244,10 @@ ADO_PAT_FILE = r"C:\Users\tamqu\Documents\Claude\Projects\W\.secrets\ado_pat.txt
 # and continue (do not abort). omni-operator-learning audits drift weekly.
 
 EXPECTED_SKILL_VERSIONS = {
-    "omni-config":                  "1.20",
+    "omni-config":                  "1.21",
     "omni-orchestrator":            "1.1",
     "omni-utils":                   "11.2",
-    "omni-data-sync":               "12.7",
+    "omni-data-sync":               "12.8",
     "omni-email-extractor":         "4.0",
     "omni-sent-analyzer":           "2.0",
     "omni-daily-briefing":          "7.3",
@@ -255,6 +255,7 @@ EXPECTED_SKILL_VERSIONS = {
     "omni-pulse":                   "1.2",
     "omni-comment-reply-queue":     "3.0",
     "omni-clickup-ado-sync":        "6.5",
+    "omni-clickup-poster":          "1.0",
     "ado-oms-knowledge-sync":       "2.1",
     "project-knowledge-sync":       "2.0",
     "requirement-analyzer-compact": "4.0",
@@ -661,6 +662,17 @@ INTRADAY_WINDOW = ("08:00", "18:30")   # business-hours envelope for the intrada
 ADO_SYNC_AUTONOMOUS = True
 ADO_SYNC_WINDOW = ("10:00", "17:00")   # after the 09:00 FULL sync, before EOD — so it mirrors fresh data
 
+# Autonomous approval-gated ClickUp COMMENT poster (v1.21 — evening job step post_replies).
+# Unlike ado_sync (an internal one-way ADO mirror), this posts an EXTERNAL, client-facing
+# ClickUp comment — so the bar is higher. It posts ONLY work_items the human already set
+# status='approved' (per-item authorization), AND source='clickup_comment' AND
+# is_governance=false, with a live draft-body governance re-scan at post time. Governance
+# items never enter. SAFE DEFAULT = OFF: while False, the evening post_replies step only
+# SURFACES "N approved ClickUp replies ready — post manually" and sends NOTHING; approvals
+# still post via the on-demand 'post approved replies' invocation with a human present.
+# Flip True only once you are comfortable that approved==authorized-to-send-unattended.
+CLICKUP_AUTOPOST_AUTONOMOUS = False
+
 # Each job = a time window + an ordered list of steps. The orchestrator runs the steps in
 # order, skipping any once-per-day/week step already logged 'done' in agent_runs today/this week.
 SCHEDULE = [
@@ -686,6 +698,20 @@ SCHEDULE = [
              "once_per_day": True,  "staleness_gate_h": None},
             {"run_kind": "briefing_evening", "skill": "omni-daily-briefing","mode": None,
              "once_per_day": True,  "staleness_gate_h": None},
+            # v1.21 — end-of-day approval-gated ClickUp execution (LAST steps of the day).
+            # POST: post_approved_clickup_replies — posts work_items status='approved',
+            #       source='clickup_comment', is_governance=false to their source task, then
+            #       marks done. Gated by CLICKUP_AUTOPOST_AUTONOMOUS (SAFE DEFAULT OFF): when
+            #       False the step only SURFACES 'N approved replies ready — post manually' and
+            #       writes nothing. When True it posts unattended. Governance never enters
+            #       (is_governance filter + live draft-body re-scan inside the skill).
+            # CLOSE: close_posted_work_items — reply-ONLY close (reactions never close; no
+            #       time-based soft-close). Read+monitor; spawns a follow-up work_item on a
+            #       new question. Always safe to run (no external send), so it is NOT flag-gated.
+            {"run_kind": "post_replies",     "skill": "omni-clickup-poster","mode": "POST",
+             "once_per_day": False, "staleness_gate_h": None, "requires_flag": "CLICKUP_AUTOPOST_AUTONOMOUS"},
+            {"run_kind": "close_replies",    "skill": "omni-clickup-poster","mode": "CLOSE",
+             "once_per_day": False, "staleness_gate_h": None},
         ],
     },
     {
