@@ -1,6 +1,6 @@
 ---
 name: omni-data-sync
-description: "Centralized data fetch for OMNI program (Supabase-only; Mem0 retired). v12.8: STEP 7A-WI AUTO-FILL APPROVAL INBOX — after actions+context pack, calls idempotent generate_work_items() to refill work_items (ready_to_send/needs_your_call/governance-held); surface-only, never posts/sends, governance+scope guards live in the DB function. v12.7: STEP 7A0-B DENSE OUTCOME LEDGER — response-verdict outcome_signal facts (acted/ignored/overridden) for every surfaced action, consumed by omni-operator-learning. v12.6: STEP 2C SENT-RECONCILIATION auto-closes reply/follow-up actions when reply post-dates the ask. v12.5: STEP 7A-DEDUP structural duplicate-decision merge (FULL only, governance-guarded). STEP 4F: ClickUp comments mandatory in FULL/LIGHTWEIGHT. Requires omni-utils v11.2 + omni-config v1.5. Triggers: 'sync data', 'refresh data', 'fetch latest', 'run data sync', 'update memory from sources', or when cache stale."
+description: "Centralized data fetch for OMNI program (Supabase-only; Mem0 retired). v12.9: STEP 5-EXP CALENDAR AUTO-EXPIRY — archives calendar-prep actions 2+ days past meeting (open/needs_review only, reversible, fail-open); DB TAXONOMY CONTRACT — canonical source (15 values) + priority P0–P3 enforced by DB CHECK constraints + normalize trigger (migration 2026-07-02); 'archived' is terminal, open-pool queries whitelist active statuses. v12.8: STEP 7A-WI AUTO-FILL APPROVAL INBOX — idempotent generate_work_items() refills inbox; surface-only, governance guards in DB. v12.7: STEP 7A0-B dense response-outcome ledger (acted/ignored/overridden) for omni-operator-learning. v12.6: STEP 2C sent-reconciliation auto-closes replied actions. STEP 4F: ClickUp comments mandatory in FULL/LIGHTWEIGHT. Requires omni-utils v11.2 + omni-config v1.5. Triggers: 'sync data', 'refresh data', 'fetch latest', 'run data sync', 'update memory from sources', or when cache stale."
 ---
 
 # OMNI Centralized Data Sync
@@ -91,6 +91,7 @@ STEP 4F → upsert_actions()                 → reply-needed + ACTION signals
 STEP 4F → upsert_decisions()               → DECISION signals from comments
 STEP 4F → upsert_risks()                   → RISK/BLOCKER signals from comments
 STEP 5  → upsert_source_items(calendar_event) → calendar events
+STEP 5-EXP → auto-archive expired calendar-prep actions (2+ days past)  ⭐ v12.9
 STEP 6  → resolve_feature_key() + rollup_feature_status() → feature_status  ⭐ v12.2
         → auto-supersede satisfied actions (confidence-gated)
 STEP 7  → build_context_pack_from_supabase()   (includes feature_rollup)
@@ -99,6 +100,22 @@ STEP 7A-WI → generate_work_items()             → refill Approval Inbox (idem
         → complete_sync_run()
 STEP 7B → cleanup_old_raw_items()          → rolling retention
 ```
+
+### ⛔ DB TAXONOMY CONTRACT ⭐ v12.9 (migration 2026-07-02, non-negotiable)
+
+The `actions` table now enforces canonical values at the DB layer — CHECK constraints plus a
+`BEFORE INSERT/UPDATE` normalization trigger:
+
+- **`source`** — 15 canonical values only. External: `email`, `sent_email`, `teams_message`,
+  `clickup_task`, `clickup_comment`, `ado_work_item`, `calendar_event`. Internal: `sync`,
+  `briefing`, `eod`, `learning`, `self_improve`, `requirement_analyzer`, `ado_sync`, `operator`.
+  Legacy variants (`EMAIL`, `TEAMS`, `calendar`, skill names…) are auto-mapped by the trigger —
+  write canonical values anyway; the trigger is a safety net, not a license.
+- **`priority`** — `P0`–`P3` only. `urgent`→P0, `high/1/p1`→P1, `2/normal/p2`→P2, `3/low`→P3.
+- **`status`** — allowed: `open`, `in_progress`, `done`, `blocked`, `superseded`,
+  `needs_review`, `archived`. **`archived` and `superseded` are TERMINAL** — every open-pool
+  query MUST whitelist active statuses (`status IN ('open','in_progress',...)`), never
+  blacklist `done` alone.
 
 ### feature_key at write-time (v12.2)
 
@@ -1758,7 +1775,7 @@ for event in calendar_events:
             "title":       f"[PREP] {event.get('subject','')}",
             "owner":       "Nghiem",
             "due_date":    event.get("start","")[:10],
-            "source":      "calendar",     # standardized (never "calendar_event")
+            "source":      "calendar_event",  # v12.9 canonical — DB CHECK constraint enforces; 'calendar' is auto-mapped by DB trigger but do not rely on it
             "source_ref":  event.get("id") or prep_key,
             "priority":    "P2",
             "status":      "open",
@@ -1774,6 +1791,28 @@ if calendar_actions:
     upsert_actions(sync_id=sync_id, actions_list=calendar_actions)
     print(f"[STEP 5] supabase_actions_upserted: calendar prep count={len(calendar_actions)}")
 ```
+
+### STEP 5-EXP — Calendar prep auto-expiry ⭐ v12.9 (FULL + LIGHTWEIGHT)
+
+Meeting-prep actions are worthless once the meeting is 2+ days past. Without this step they
+accumulate (the 2026-07-02 purge archived 50+ of them). Run immediately after the STEP 5 upserts:
+
+```sql
+UPDATE actions
+SET status='archived', updated_at=now(),
+    raw_json = COALESCE(raw_json,'{}'::jsonb)
+               || jsonb_build_object('auto_expired', CURRENT_DATE::text, 'prev_status', status)
+WHERE source='calendar_event'
+  AND status IN ('open','needs_review')
+  AND COALESCE(due_date, run_date) < CURRENT_DATE - 2;
+```
+
+**Guards (non-negotiable):**
+- Only `open`/`needs_review` — never `in_progress`/`blocked` (someone is actively on those).
+- Only `source='calendar_event'` — never email/ClickUp/governance items.
+- Reversible: `prev_status` retained in `raw_json`; restore = one status flip.
+- Fail-open: on error, log and continue — never abort the sync.
+- Count into STEP 8 summary as `cal_expired:N`.
 
 ---
 
